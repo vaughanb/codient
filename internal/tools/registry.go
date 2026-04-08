@@ -269,6 +269,7 @@ func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, s
 	r.Register(Tool{
 		Name: "search_files",
 		Description: "Finds files under the workspace whose path or basename contains substring and/or ends with suffix. " +
+			"At least one of substring or suffix MUST be provided. " +
 			"Optional under limits the search to a subdirectory of the workspace.",
 		Parameters: shared.FunctionParameters{
 			"type": "object",

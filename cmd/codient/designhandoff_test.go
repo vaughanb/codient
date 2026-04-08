@@ -23,6 +23,7 @@ func TestDesignHandoffUserMessage_Directives(t *testing.T) {
 		"do not ask",
 		"confirmed",
 		"start implementing",
+		"verify",
 		"ignore any line",
 		"run codient",
 	} {

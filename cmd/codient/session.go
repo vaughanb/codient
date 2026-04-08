@@ -300,6 +300,8 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 
 	sc := bufio.NewScanner(os.Stdin)
 	s.scanner = sc
+	enableBracketedPaste()
+	defer disableBracketedPaste()
 	s.registry = buildRegistry(s.cfg, s.mode, s)
 	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 
@@ -348,10 +350,10 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	for !done {
 		fmt.Fprint(os.Stderr, "\n")
 		s.printPrompt()
-		if !sc.Scan() {
+		line, ok := readUserInput(sc)
+		if !ok {
 			break
 		}
-		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
 		}
@@ -498,7 +500,11 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Name:        "help",
 		Aliases:     []string{"h", "?"},
 		Description: "show available commands",
-		Run:         func(string) error { fmt.Fprint(os.Stderr, cmds.Help()); return nil },
+		Run: func(string) error {
+			fmt.Fprint(os.Stderr, cmds.Help())
+			fmt.Fprint(os.Stderr, "\nTip: end a line with \\ for multiline input. Pasting multiline text is also supported.\n")
+			return nil
+		},
 	})
 	cmds.Register(slashcmd.Command{
 		Name:        "config",
