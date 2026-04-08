@@ -104,7 +104,7 @@ You are in **Build** mode: you may create or modify files and run allowlisted co
 func sectionToolUsageReadOnly() string {
 	return `## Tool usage
 
-- Follow each tool's JSON schema exactly; only use tools that exist in this session.
+- Follow each tool's JSON schema exactly; **only call tools listed in this session**. Calling a tool that does not exist (e.g. todo_write, TodoWrite, create_plan) wastes a turn. If you are unsure whether a tool exists, check the list below.
 - **Read-only tools only**: list, search, read, and grep the workspace—no writes or subprocesses.
 - Prefer gathering evidence with tools rather than guessing; ask the user only when the repository cannot resolve ambiguity.
 - Use normal tool-calling channels—do not paste fake tool calls as plain text in the assistant message.`
@@ -180,7 +180,7 @@ func sectionCommunication() string {
 func sectionToolUsage() string {
 	return `## Tool usage
 
-- Follow each tool's JSON schema exactly; only use tools that exist in this session.
+- Follow each tool's JSON schema exactly; **only call tools listed in this session**. Calling a tool that does not exist (e.g. todo_write, TodoWrite, create_plan) wastes a turn. If you are unsure whether a tool exists, check the list below.
 - Prefer **gathering context** (list, search, read) before editing.
 - If unsure, use more tools rather than guessing; only ask the user when the repository cannot answer.
 - Use normal tool-calling channels—do not paste fake tool calls as plain text in the assistant message.`
