@@ -33,6 +33,7 @@ import (
 type session struct {
 	cfg              *config.Config
 	client           *openaiclient.Client
+	clientCache      map[string]*openaiclient.Client // keyed by "baseURL|apiKey|model"
 	registry         *tools.Registry
 	agentLog         *agentlog.Logger
 	progressOut      io.Writer
@@ -70,7 +71,30 @@ type undoEntry struct {
 	historyLen    int      // len(s.history) before this turn started
 }
 
+// clientForMode returns the openaiclient.Client for the given mode, using per-mode
+// model overrides if configured. Clients are cached by (baseURL, apiKey, model).
+func (s *session) clientForMode(mode prompt.Mode) *openaiclient.Client {
+	baseURL, apiKey, model := s.cfg.EffectiveModelConfig(string(mode))
+	key := baseURL + "|" + apiKey + "|" + model
+	if c, ok := s.clientCache[key]; ok {
+		return c
+	}
+	c := openaiclient.NewFromParams(baseURL, apiKey, model, s.cfg.MaxConcurrent)
+	if s.clientCache == nil {
+		s.clientCache = make(map[string]*openaiclient.Client)
+	}
+	s.clientCache[key] = c
+	return c
+}
+
+// invalidateClientCache clears the client cache so the next clientForMode()
+// picks up any config changes to base_url, api_key, model, or per-mode overrides.
+func (s *session) invalidateClientCache() {
+	s.clientCache = nil
+}
+
 func (s *session) newRunner() *agent.Runner {
+	s.client = s.clientForMode(s.mode)
 	r := &agent.Runner{
 		LLM: s.client, Cfg: s.cfg, Tools: s.registry,
 		Log: s.agentLog, Progress: s.progressOut,
@@ -296,7 +320,7 @@ func (s *session) runSingleTurn(ctx context.Context, user string) int {
 		Repl:      false,
 		Mode:      string(s.mode),
 		Workspace: s.cfg.EffectiveWorkspace(),
-		Model:     s.cfg.Model,
+		Model:     s.cfg.EffectiveModel(string(s.mode)),
 	})
 	if s.cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", s.cfg.EffectiveWorkspace(), s.mode, strings.Join(s.registry.Names(), ", "))
@@ -350,7 +374,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		Repl:      true,
 		Mode:      string(s.mode),
 		Workspace: ws,
-		Model:     s.cfg.Model,
+		Model:     s.cfg.EffectiveModel(string(s.mode)),
 	})
 	if s.cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", ws, s.mode, strings.Join(s.registry.Names(), ", "))
@@ -367,7 +391,8 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 
 	if strings.TrimSpace(s.cfg.Model) == "" {
 		s.runSetupWizard(ctx, sc)
-		s.client = openaiclient.New(s.cfg)
+		s.invalidateClientCache()
+		s.client = s.clientForMode(s.mode)
 		s.registry = buildRegistry(s.cfg, s.mode, s)
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 	}
@@ -486,7 +511,12 @@ func (s *session) printPrompt() {
 // is finalized. If accepted, it switches modes and injects the design as the
 // first build turn. Returns the updated runner.
 func (s *session) offerPlanHandoff(ctx context.Context, sc *bufio.Scanner, runner *agent.Runner, designText string) *agent.Runner {
-	fmt.Fprintf(os.Stderr, "\ncodient: plan complete — would you like to build it? [Y/n] ")
+	buildModel := s.cfg.EffectiveModel("build")
+	if buildModel != "" && buildModel != s.cfg.EffectiveModel(string(s.mode)) {
+		fmt.Fprintf(os.Stderr, "\ncodient: plan complete — build with %s? [Y/n] ", buildModel)
+	} else {
+		fmt.Fprintf(os.Stderr, "\ncodient: plan complete — would you like to build it? [Y/n] ")
+	}
 	if !sc.Scan() {
 		return runner
 	}
@@ -527,7 +557,7 @@ func (s *session) autoSave() {
 		ID:        s.sessionID,
 		Workspace: ws,
 		Mode:      string(s.mode),
-		Model:     s.cfg.Model,
+		Model:     s.cfg.EffectiveModel(string(s.mode)),
 		Messages:  sessionstore.FromOpenAI(s.history),
 	}
 	if err := sessionstore.Save(state); err != nil {
@@ -577,7 +607,8 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Description: "guided setup wizard for API connection, model selection, and web search",
 		Run: func(string) error {
 			s.runSetupWizard(ctx, sc)
-			s.client = openaiclient.New(s.cfg)
+			s.invalidateClientCache()
+			s.client = s.clientForMode(s.mode)
 			s.registry = buildRegistry(s.cfg, s.mode, s)
 			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 			s.cfg.ContextWindowTokens = 0
@@ -633,7 +664,15 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run: func(string) error {
 			fmt.Fprintf(os.Stderr, "  session:   %s\n", s.sessionID)
 			fmt.Fprintf(os.Stderr, "  mode:      %s\n", s.mode)
-			fmt.Fprintf(os.Stderr, "  model:     %s\n", s.cfg.Model)
+			fmt.Fprintf(os.Stderr, "  model:     %s\n", s.cfg.EffectiveModel(string(s.mode)))
+			if s.cfg.HasModeOverrides() {
+				for _, m := range []string{"plan", "build", "ask"} {
+					em := s.cfg.EffectiveModel(m)
+					if em != s.cfg.Model {
+						fmt.Fprintf(os.Stderr, "  %s model: %s\n", m, em)
+					}
+				}
+			}
 			fmt.Fprintf(os.Stderr, "  workspace: %s\n", s.cfg.EffectiveWorkspace())
 			fmt.Fprintf(os.Stderr, "  turns:     %d\n", s.turn)
 			usage := s.estimateFullContextUsage()
@@ -680,7 +719,12 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run: func(args string) error {
 			name := strings.TrimSpace(args)
 			if name == "" {
-				fmt.Fprintf(os.Stderr, "current model: %s\n", s.cfg.Model)
+				em := s.cfg.EffectiveModel(string(s.mode))
+				if em != s.cfg.Model && s.cfg.Model != "" {
+					fmt.Fprintf(os.Stderr, "current model (%s mode): %s  (default: %s)\n", s.mode, em, s.cfg.Model)
+				} else {
+					fmt.Fprintf(os.Stderr, "current model: %s\n", em)
+				}
 				return nil
 			}
 			return s.handleConfig(ctx, "model "+name)
@@ -780,12 +824,19 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 
 	switch key {
 	case "model", "base_url", "api_key":
-		s.client = openaiclient.New(s.cfg)
+		s.invalidateClientCache()
+		s.client = s.clientForMode(s.mode)
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 		if key == "model" || key == "base_url" {
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
 		}
+	case "plan_model", "build_model", "ask_model",
+		"plan_base_url", "build_base_url", "ask_base_url",
+		"plan_api_key", "build_api_key", "ask_api_key":
+		s.invalidateClientCache()
+		s.client = s.clientForMode(s.mode)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 	case "autocheck_cmd":
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 	}
@@ -802,6 +853,28 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  base_url:              %s\n", s.cfg.BaseURL)
 	fmt.Fprintf(w, "  api_key:               %s\n", masked)
 	fmt.Fprintf(w, "  model:                 %s\n", s.cfg.Model)
+	if s.cfg.HasModeOverrides() {
+		fmt.Fprintf(w, "\n  -- Per-mode models --\n")
+		for _, m := range []string{"plan", "build", "ask"} {
+			mp := s.cfg.Models[m]
+			if mp == nil {
+				continue
+			}
+			if mp.Model != "" {
+				fmt.Fprintf(w, "  %s_model:            %s\n", m, mp.Model)
+			}
+			if mp.BaseURL != "" {
+				fmt.Fprintf(w, "  %s_base_url:         %s\n", m, mp.BaseURL)
+			}
+			if mp.APIKey != "" {
+				masked := mp.APIKey
+				if len(masked) > 4 {
+					masked = masked[:4] + strings.Repeat("*", len(masked)-4)
+				}
+				fmt.Fprintf(w, "  %s_api_key:          %s\n", m, masked)
+			}
+		}
+	}
 	fmt.Fprintf(w, "\n  -- Defaults --\n")
 	fmt.Fprintf(w, "  mode:                  %s\n", s.cfg.Mode)
 	fmt.Fprintf(w, "  workspace:             %s\n", s.cfg.Workspace)
@@ -926,6 +999,20 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return s.cfg.ProjectContext, true
 	case "ast_grep":
 		return s.cfg.AstGrep, true
+	case "plan_model", "build_model", "ask_model":
+		mode := strings.TrimSuffix(key, "_model")
+		return s.cfg.EffectiveModel(mode), true
+	case "plan_base_url", "build_base_url", "ask_base_url":
+		mode := strings.TrimSuffix(key, "_base_url")
+		base, _, _ := s.cfg.EffectiveModelConfig(mode)
+		return base, true
+	case "plan_api_key", "build_api_key", "ask_api_key":
+		mode := strings.TrimSuffix(key, "_api_key")
+		_, apiKey, _ := s.cfg.EffectiveModelConfig(mode)
+		if len(apiKey) > 4 {
+			apiKey = apiKey[:4] + strings.Repeat("*", len(apiKey)-4)
+		}
+		return apiKey, true
 	default:
 		return "", false
 	}
@@ -1072,10 +1159,52 @@ func (s *session) setConfig(key, value string) error {
 		s.cfg.AstGrep = value
 		s.registry = buildRegistry(s.cfg, s.mode, s)
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+	case "plan_model", "build_model", "ask_model":
+		mode := strings.TrimSuffix(key, "_model")
+		s.ensureModelProfile(mode).Model = value
+		s.cleanModelProfile(mode)
+		s.invalidateClientCache()
+	case "plan_base_url", "build_base_url", "ask_base_url":
+		mode := strings.TrimSuffix(key, "_base_url")
+		s.ensureModelProfile(mode).BaseURL = strings.TrimRight(value, "/")
+		s.cleanModelProfile(mode)
+		s.invalidateClientCache()
+	case "plan_api_key", "build_api_key", "ask_api_key":
+		mode := strings.TrimSuffix(key, "_api_key")
+		s.ensureModelProfile(mode).APIKey = value
+		s.cleanModelProfile(mode)
+		s.invalidateClientCache()
 	default:
 		return fmt.Errorf("unknown config key %q", key)
 	}
 	return nil
+}
+
+// ensureModelProfile returns the ModelProfile for the given mode, creating it if needed.
+func (s *session) ensureModelProfile(mode string) *config.ModelProfile {
+	if s.cfg.Models == nil {
+		s.cfg.Models = make(map[string]*config.ModelProfile)
+	}
+	mp := s.cfg.Models[mode]
+	if mp == nil {
+		mp = &config.ModelProfile{}
+		s.cfg.Models[mode] = mp
+	}
+	return mp
+}
+
+// cleanModelProfile removes the profile entry if all fields are empty.
+func (s *session) cleanModelProfile(mode string) {
+	mp := s.cfg.Models[mode]
+	if mp == nil {
+		return
+	}
+	if mp.BaseURL == "" && mp.APIKey == "" && mp.Model == "" {
+		delete(s.cfg.Models, mode)
+	}
+	if len(s.cfg.Models) == 0 {
+		s.cfg.Models = nil
+	}
 }
 
 // resolveAstGrep resolves the ast-grep binary path into cfg.AstGrep.
@@ -1141,11 +1270,12 @@ func (s *session) probeAndSetContext(ctx context.Context) {
 	if s.cfg.ContextWindowTokens > 0 {
 		return
 	}
-	model := strings.TrimSpace(s.cfg.Model)
+	model := strings.TrimSpace(s.cfg.EffectiveModel(string(s.mode)))
 	if model == "" {
 		return
 	}
-	n, err := s.client.ProbeContextWindow(ctx, model)
+	c := s.clientForMode(s.mode)
+	n, err := c.ProbeContextWindow(ctx, model)
 	if err != nil || n <= 0 {
 		return
 	}

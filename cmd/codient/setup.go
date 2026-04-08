@@ -80,13 +80,100 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 		break
 	}
 
+	s.setupPerModeModels(sc, models)
 	s.setupWebSearch(sc)
 
 	if err := saveCurrentConfig(s.cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "  Warning: could not save config: %v\n", err)
 	}
-	fmt.Fprintf(os.Stderr, "\n  Configuration saved. Model set to %s.\n\n", s.cfg.Model)
+	fmt.Fprintf(os.Stderr, "\n  Configuration saved. Model set to %s.\n", s.cfg.Model)
+	if s.cfg.HasModeOverrides() {
+		for _, m := range []string{"plan", "build"} {
+			if em := s.cfg.EffectiveModel(m); em != s.cfg.Model {
+				fmt.Fprintf(os.Stderr, "  %s model: %s\n", m, em)
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr, "\n")
 	return true
+}
+
+// setupPerModeModels optionally configures different models for plan and build modes.
+func (s *session) setupPerModeModels(sc *bufio.Scanner, models []string) {
+	if len(models) < 2 {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  You can use different models for planning (code analysis) and building (writing code).\n")
+	fmt.Fprintf(os.Stderr, "  Configure per-mode models? [y/N] ")
+	if !sc.Scan() {
+		return
+	}
+	answer := strings.ToLower(strings.TrimSpace(sc.Text()))
+	if answer != "y" && answer != "yes" {
+		return
+	}
+
+	if s.cfg.Models == nil {
+		s.cfg.Models = make(map[string]*config.ModelProfile)
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  Available models:\n\n")
+	for i, m := range models {
+		fmt.Fprintf(os.Stderr, "    %d) %s\n", i+1, m)
+	}
+
+	planModel := pickModelFromList(sc, models, "  Plan model (code analysis, implementation design)", s.cfg.Model)
+	if planModel != "" && planModel != s.cfg.Model {
+		if s.cfg.Models["plan"] == nil {
+			s.cfg.Models["plan"] = &config.ModelProfile{}
+		}
+		s.cfg.Models["plan"].Model = planModel
+		fmt.Fprintf(os.Stderr, "  Plan model set to %s.\n", planModel)
+	} else {
+		delete(s.cfg.Models, "plan")
+		fmt.Fprintf(os.Stderr, "  Plan model: same as default (%s).\n", s.cfg.Model)
+	}
+
+	buildModel := pickModelFromList(sc, models, "  Build model (writing and editing code)", s.cfg.Model)
+	if buildModel != "" && buildModel != s.cfg.Model {
+		if s.cfg.Models["build"] == nil {
+			s.cfg.Models["build"] = &config.ModelProfile{}
+		}
+		s.cfg.Models["build"].Model = buildModel
+		fmt.Fprintf(os.Stderr, "  Build model set to %s.\n", buildModel)
+	} else {
+		delete(s.cfg.Models, "build")
+		fmt.Fprintf(os.Stderr, "  Build model: same as default (%s).\n", s.cfg.Model)
+	}
+
+	if len(s.cfg.Models) == 0 {
+		s.cfg.Models = nil
+	}
+}
+
+// pickModelFromList prompts the user to select a model by number or name.
+// Returns the chosen model, or defaultModel if the user presses Enter.
+func pickModelFromList(sc *bufio.Scanner, models []string, label, defaultModel string) string {
+	fmt.Fprintf(os.Stderr, "\n%s [%s]: ", label, defaultModel)
+	if !sc.Scan() {
+		return defaultModel
+	}
+	input := strings.TrimSpace(sc.Text())
+	if input == "" {
+		return defaultModel
+	}
+	n, err := strconv.Atoi(input)
+	if err == nil && n >= 1 && n <= len(models) {
+		return models[n-1]
+	}
+	for _, m := range models {
+		if strings.EqualFold(m, input) {
+			return m
+		}
+	}
+	fmt.Fprintf(os.Stderr, "  Unrecognized model %q, keeping default.\n", input)
+	return defaultModel
 }
 
 func (s *session) setupWebSearch(sc *bufio.Scanner) {

@@ -459,3 +459,178 @@ func TestConfigToPersistent_RoundTrip(t *testing.T) {
 		t.Fatalf("*bool round-trip failed: fetch=%v stream=%v design=%v", c.FetchPreapproved, c.StreamReply, c.DesignSave)
 	}
 }
+
+func TestEffectiveModelConfig_NoOverrides(t *testing.T) {
+	c := &Config{
+		BaseURL: "http://default/v1",
+		APIKey:  "default-key",
+		Model:   "default-model",
+	}
+	base, key, model := c.EffectiveModelConfig("plan")
+	if base != "http://default/v1" || key != "default-key" || model != "default-model" {
+		t.Fatalf("expected defaults, got base=%q key=%q model=%q", base, key, model)
+	}
+}
+
+func TestEffectiveModelConfig_PartialOverride(t *testing.T) {
+	c := &Config{
+		BaseURL: "http://default/v1",
+		APIKey:  "default-key",
+		Model:   "default-model",
+		Models: map[string]*ModelProfile{
+			"plan": {Model: "plan-model"},
+		},
+	}
+	base, key, model := c.EffectiveModelConfig("plan")
+	if base != "http://default/v1" {
+		t.Fatalf("base should inherit default: got %q", base)
+	}
+	if key != "default-key" {
+		t.Fatalf("api_key should inherit default: got %q", key)
+	}
+	if model != "plan-model" {
+		t.Fatalf("model should be overridden: got %q", model)
+	}
+}
+
+func TestEffectiveModelConfig_FullOverride(t *testing.T) {
+	c := &Config{
+		BaseURL: "http://default/v1",
+		APIKey:  "default-key",
+		Model:   "default-model",
+		Models: map[string]*ModelProfile{
+			"build": {
+				BaseURL: "http://build-server/v1",
+				APIKey:  "build-key",
+				Model:   "build-model",
+			},
+		},
+	}
+	base, key, model := c.EffectiveModelConfig("build")
+	if base != "http://build-server/v1" {
+		t.Fatalf("base: got %q", base)
+	}
+	if key != "build-key" {
+		t.Fatalf("api_key: got %q", key)
+	}
+	if model != "build-model" {
+		t.Fatalf("model: got %q", model)
+	}
+
+	// Unrelated mode should still get defaults.
+	base2, key2, model2 := c.EffectiveModelConfig("ask")
+	if base2 != "http://default/v1" || key2 != "default-key" || model2 != "default-model" {
+		t.Fatalf("ask should get defaults: base=%q key=%q model=%q", base2, key2, model2)
+	}
+}
+
+func TestEffectiveModel(t *testing.T) {
+	c := &Config{
+		Model: "default",
+		Models: map[string]*ModelProfile{
+			"plan": {Model: "planner"},
+		},
+	}
+	if got := c.EffectiveModel("plan"); got != "planner" {
+		t.Fatalf("got %q", got)
+	}
+	if got := c.EffectiveModel("build"); got != "default" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestHasModeOverrides(t *testing.T) {
+	c := &Config{}
+	if c.HasModeOverrides() {
+		t.Fatal("empty config should not have overrides")
+	}
+	c.Models = map[string]*ModelProfile{"plan": {Model: "x"}}
+	if !c.HasModeOverrides() {
+		t.Fatal("should detect override")
+	}
+	c.Models = map[string]*ModelProfile{"plan": {}}
+	if c.HasModeOverrides() {
+		t.Fatal("all-empty profile should not count as override")
+	}
+}
+
+func TestConfigToPersistent_Models_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	cfg := &Config{
+		BaseURL:       "http://test/v1",
+		APIKey:        "key",
+		Model:         "default",
+		MaxConcurrent: 3,
+		Models: map[string]*ModelProfile{
+			"plan": {
+				BaseURL: "http://plan-server/v1",
+				Model:   "plan-model",
+			},
+			"build": {
+				Model: "build-model",
+			},
+		},
+	}
+	pc := ConfigToPersistent(cfg)
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Models == nil {
+		t.Fatal("Models should not be nil after round-trip")
+	}
+	if c.Models["plan"] == nil {
+		t.Fatal("plan profile missing")
+	}
+	if c.Models["plan"].BaseURL != "http://plan-server/v1" {
+		t.Fatalf("plan base_url: got %q", c.Models["plan"].BaseURL)
+	}
+	if c.Models["plan"].Model != "plan-model" {
+		t.Fatalf("plan model: got %q", c.Models["plan"].Model)
+	}
+	if c.Models["build"] == nil || c.Models["build"].Model != "build-model" {
+		t.Fatalf("build profile: %+v", c.Models["build"])
+	}
+	if c.Models["build"].BaseURL != "" {
+		t.Fatalf("build base_url should be empty: got %q", c.Models["build"].BaseURL)
+	}
+}
+
+func TestLoad_ModelsFromConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	pc := &PersistentConfig{
+		BaseURL: "http://default/v1",
+		APIKey:  "key",
+		Model:   "default",
+		Models: map[string]*PersistentModelProfile{
+			"plan":  {Model: "plan-model", BaseURL: "http://plan/v1"},
+			"build": {Model: "build-model"},
+		},
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _, model := c.EffectiveModelConfig("plan")
+	if base != "http://plan/v1" || model != "plan-model" {
+		t.Fatalf("plan effective: base=%q model=%q", base, model)
+	}
+	base2, _, model2 := c.EffectiveModelConfig("build")
+	if base2 != "http://default/v1" || model2 != "build-model" {
+		t.Fatalf("build effective: base=%q model=%q", base2, model2)
+	}
+	base3, _, model3 := c.EffectiveModelConfig("ask")
+	if base3 != "http://default/v1" || model3 != "default" {
+		t.Fatalf("ask effective: base=%q model=%q", base3, model3)
+	}
+}

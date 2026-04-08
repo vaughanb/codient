@@ -49,20 +49,28 @@ func (s *semaphore) release() {
 	<-s.ch
 }
 
-// New builds an OpenAI API client for the configured base URL and a concurrency limiter for chat calls.
-func New(cfg *config.Config) *Client {
-	base := strings.TrimRight(cfg.BaseURL, "/")
+// NewFromParams builds an OpenAI API client from explicit connection parameters.
+func NewFromParams(baseURL, apiKey, model string, maxConcurrent int) *Client {
+	base := strings.TrimRight(baseURL, "/")
+	if maxConcurrent < 1 {
+		maxConcurrent = 3
+	}
 	oa := openai.NewClient(
 		option.WithBaseURL(base),
-		option.WithAPIKey(cfg.APIKey),
+		option.WithAPIKey(apiKey),
 	)
 	return &Client{
 		oa:     oa,
 		base:   base,
-		apiKey: cfg.APIKey,
-		model:  shared.ChatModel(cfg.Model),
-		llmSem: newSemaphore(cfg.MaxConcurrent),
+		apiKey: apiKey,
+		model:  shared.ChatModel(model),
+		llmSem: newSemaphore(maxConcurrent),
 	}
+}
+
+// New builds an OpenAI API client using top-level Config defaults.
+func New(cfg *config.Config) *Client {
+	return NewFromParams(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.MaxConcurrent)
 }
 
 // Model returns the configured model id.

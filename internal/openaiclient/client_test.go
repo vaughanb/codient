@@ -303,3 +303,37 @@ func TestStreamChatCompletion_MockServer(t *testing.T) {
 		t.Fatalf("got %q", buf.String())
 	}
 }
+
+func TestNewFromParams(t *testing.T) {
+	c := NewFromParams("http://example.com/v1", "test-key", "my-model", 5)
+	if c.Model() != "my-model" {
+		t.Fatalf("Model: got %q", c.Model())
+	}
+	if c.base != "http://example.com/v1" {
+		t.Fatalf("base: got %q", c.base)
+	}
+	if c.apiKey != "test-key" {
+		t.Fatalf("apiKey: got %q", c.apiKey)
+	}
+	if cap(c.llmSem.ch) != 5 {
+		t.Fatalf("semaphore capacity: got %d", cap(c.llmSem.ch))
+	}
+}
+
+func TestNewFromParams_DefaultsConcurrency(t *testing.T) {
+	c := NewFromParams("http://example.com/v1", "key", "m", 0)
+	if cap(c.llmSem.ch) != 3 {
+		t.Fatalf("expected default concurrency 3, got %d", cap(c.llmSem.ch))
+	}
+}
+
+func TestNewDelegatesToNewFromParams(t *testing.T) {
+	cfg := testConfig("http://test/v1", "test-model")
+	c := New(cfg)
+	if c.Model() != "test-model" {
+		t.Fatalf("Model: got %q", c.Model())
+	}
+	if c.base != "http://test/v1" {
+		t.Fatalf("base: got %q", c.base)
+	}
+}

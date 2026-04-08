@@ -28,12 +28,23 @@ const (
 	maxSearchMaxResults     = 10
 )
 
+// ModelProfile holds per-mode LLM connection overrides.
+// Any non-empty field overrides the corresponding top-level Config default.
+type ModelProfile struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+}
+
 // Config holds runtime settings.
 type Config struct {
 	BaseURL       string
 	APIKey        string
 	Model         string
 	MaxConcurrent int
+	// Models holds optional per-mode overrides keyed by mode name ("plan", "build", "ask").
+	// Fields left empty inherit from the top-level BaseURL/APIKey/Model.
+	Models map[string]*ModelProfile
 	// Workspace is the root directory for coding tools (read_file, list_dir, search_files, write_file).
 	Workspace string
 	// ExecAllowlist is a list of lowercase command names (first argv) permitted for run_command and run_shell.
@@ -118,7 +129,10 @@ func Load() (*Config, error) {
 	}
 	model := strings.TrimSpace(pc.Model)
 
-	ws := strings.TrimSpace(pc.Workspace)
+	ws := strings.TrimSpace(os.Getenv("CODIENT_WORKSPACE"))
+	if ws == "" {
+		ws = strings.TrimSpace(pc.Workspace)
+	}
 	if ws == "" {
 		if wd, err := os.Getwd(); err == nil {
 			if abs, err := filepath.Abs(wd); err == nil {
@@ -194,11 +208,14 @@ func Load() (*Config, error) {
 		designSave = *pc.DesignSave
 	}
 
+	models := loadModelProfiles(pc.Models)
+
 	c := &Config{
 		BaseURL:              baseURL,
 		APIKey:               apiKey,
 		Model:                model,
 		MaxConcurrent:        maxConcurrent,
+		Models:               models,
 		Workspace:            ws,
 		ExecAllowlist:        execAllowlist,
 		ExecTimeoutSeconds:   execTimeout,
@@ -292,6 +309,40 @@ func (c *Config) EffectiveWorkspace() string {
 	return strings.TrimSpace(c.Workspace)
 }
 
+// EffectiveModelConfig resolves the (baseURL, apiKey, model) triple for a given mode.
+// Per-mode overrides take precedence; unset fields fall back to the top-level defaults.
+func (c *Config) EffectiveModelConfig(mode string) (baseURL, apiKey, model string) {
+	baseURL, apiKey, model = c.BaseURL, c.APIKey, c.Model
+	if mp := c.Models[mode]; mp != nil {
+		if mp.BaseURL != "" {
+			baseURL = mp.BaseURL
+		}
+		if mp.APIKey != "" {
+			apiKey = mp.APIKey
+		}
+		if mp.Model != "" {
+			model = mp.Model
+		}
+	}
+	return baseURL, apiKey, model
+}
+
+// EffectiveModel is a convenience that returns only the resolved model name for a mode.
+func (c *Config) EffectiveModel(mode string) string {
+	_, _, model := c.EffectiveModelConfig(mode)
+	return model
+}
+
+// HasModeOverrides returns true if any per-mode model profiles are configured.
+func (c *Config) HasModeOverrides() bool {
+	for _, mp := range c.Models {
+		if mp != nil && (mp.BaseURL != "" || mp.APIKey != "" || mp.Model != "") {
+			return true
+		}
+	}
+	return false
+}
+
 // defaultExecAllowlist is used when exec_allowlist is unset and exec_disable is not set,
 // so run_command / run_shell are registered without extra configuration.
 // It includes the platform shell (cmd on Windows, sh on Unix) so run_shell can run mkdir and other builtins.
@@ -336,6 +387,30 @@ func parseExecAllowlist(s string) []string {
 		}
 		seen[name] = struct{}{}
 		out = append(out, name)
+	}
+	return out
+}
+
+func loadModelProfiles(pm map[string]*PersistentModelProfile) map[string]*ModelProfile {
+	if len(pm) == 0 {
+		return nil
+	}
+	out := make(map[string]*ModelProfile, len(pm))
+	for mode, p := range pm {
+		if p == nil {
+			continue
+		}
+		mp := &ModelProfile{
+			BaseURL: strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"),
+			APIKey:  strings.TrimSpace(p.APIKey),
+			Model:   strings.TrimSpace(p.Model),
+		}
+		if mp.BaseURL != "" || mp.APIKey != "" || mp.Model != "" {
+			out[mode] = mp
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

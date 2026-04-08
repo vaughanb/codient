@@ -185,7 +185,7 @@ func run() int {
 	}
 	s := &session{
 		cfg:              cfg,
-		client:           client,
+		clientCache:      make(map[string]*openaiclient.Client),
 		agentLog:         agentLog,
 		progressOut:      progressOut,
 		mode:             agentMode,
@@ -199,6 +199,7 @@ func run() int {
 		projectContext:   projectCtx,
 		execAllow:        execAllow,
 	}
+	s.client = s.clientForMode(agentMode)
 	s.registry = buildRegistry(cfg, agentMode, s)
 	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, effectiveAutoCheckCmd(cfg))
 

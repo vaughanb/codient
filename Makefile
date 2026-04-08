@@ -41,8 +41,11 @@ clean:
 	$(RM) -r $(BIN_DIR)
 
 # Full test run: integration-tagged tests + env for strict tools and run_command (requires configured model and server).
+test: export CODIENT_INTEGRATION = 1
+test: export CODIENT_INTEGRATION_STRICT_TOOLS = 1
+test: export CODIENT_INTEGRATION_RUN_COMMAND = 1
 test:
-	CODIENT_INTEGRATION=1 CODIENT_INTEGRATION_STRICT_TOOLS=1 CODIENT_INTEGRATION_RUN_COMMAND=1 $(GO) test -tags=integration -count=1 -timeout 90m ./...
+	$(GO) test -tags=integration -count=1 -timeout 90m ./...
 
 test-unit:
 	$(GO) test ./...
@@ -53,11 +56,14 @@ test-short:
 test-race:
 	$(GO) test -race ./...
 
+test-integration: export CODIENT_INTEGRATION = 1
 test-integration:
-	CODIENT_INTEGRATION=1 $(GO) test -tags=integration -count=1 ./...
+	$(GO) test -tags=integration -count=1 ./...
 
+test-integration-strict: export CODIENT_INTEGRATION = 1
+test-integration-strict: export CODIENT_INTEGRATION_STRICT_TOOLS = 1
 test-integration-strict:
-	CODIENT_INTEGRATION=1 CODIENT_INTEGRATION_STRICT_TOOLS=1 $(GO) test -tags=integration -count=1 ./...
+	$(GO) test -tags=integration -count=1 ./...
 
 vet:
 	$(GO) vet ./...
@@ -77,8 +83,9 @@ run:
 SEARXNG_PORT    ?= 8888
 SEARXNG_COMPOSE := docker/searxng/docker-compose.yml
 
+searxng-up: export SEARXNG_PORT := $(SEARXNG_PORT)
 searxng-up:
-	SEARXNG_PORT=$(SEARXNG_PORT) docker compose -f $(SEARXNG_COMPOSE) up -d
+	docker compose -f $(SEARXNG_COMPOSE) up -d
 
 searxng-down:
 	docker compose -f $(SEARXNG_COMPOSE) down
