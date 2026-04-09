@@ -181,6 +181,13 @@ func SummarizeArgs(name string, argsJSON []byte) map[string]any {
 		if d, ok := raw["diff"].(string); ok {
 			m["diff_len"] = len(d)
 		}
+	case "insert_lines":
+		if p, ok := raw["path"].(string); ok {
+			m["path"] = p
+		}
+		if c, ok := raw["content"].(string); ok {
+			m["content_len"] = len(c)
+		}
 	case "grep":
 		if p, ok := raw["pattern"].(string); ok {
 			m["pattern"] = p

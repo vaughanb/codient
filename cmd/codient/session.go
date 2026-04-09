@@ -33,7 +33,7 @@ import (
 type session struct {
 	cfg              *config.Config
 	client           *openaiclient.Client
-	clientCache      map[string]*openaiclient.Client // keyed by "baseURL|apiKey|model"
+	llmResolver      *openaiclient.ModeClientResolver
 	registry         *tools.Registry
 	agentLog         *agentlog.Logger
 	progressOut      io.Writer
@@ -74,23 +74,13 @@ type undoEntry struct {
 // clientForMode returns the openaiclient.Client for the given mode, using per-mode
 // model overrides if configured. Clients are cached by (baseURL, apiKey, model).
 func (s *session) clientForMode(mode prompt.Mode) *openaiclient.Client {
-	baseURL, apiKey, model := s.cfg.EffectiveModelConfig(string(mode))
-	key := baseURL + "|" + apiKey + "|" + model
-	if c, ok := s.clientCache[key]; ok {
-		return c
-	}
-	c := openaiclient.NewFromParams(baseURL, apiKey, model, s.cfg.MaxConcurrent)
-	if s.clientCache == nil {
-		s.clientCache = make(map[string]*openaiclient.Client)
-	}
-	s.clientCache[key] = c
-	return c
+	return s.llmResolver.ClientFor(s.cfg, string(mode))
 }
 
-// invalidateClientCache clears the client cache so the next clientForMode()
-// picks up any config changes to base_url, api_key, model, or per-mode overrides.
+// invalidateClientCache clears cached LLM clients so the next clientForMode()
+// picks up any config changes to base_url, api_key, model, max_concurrent, or per-mode overrides.
 func (s *session) invalidateClientCache() {
-	s.clientCache = nil
+	s.llmResolver.Invalidate()
 }
 
 func (s *session) newRunner() *agent.Runner {
@@ -111,8 +101,8 @@ func (s *session) newRunner() *agent.Runner {
 }
 
 func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user string) (reply string, err error) {
-	if err := s.cfg.RequireModel(); err != nil {
-		return "", fmt.Errorf("%w — use /config model <name> to set one", err)
+	if err := s.cfg.RequireModelForMode(string(s.mode)); err != nil {
+		return "", fmt.Errorf("%w — use /config model <name> or %s_model", err, s.mode)
 	}
 	fmt.Fprint(os.Stderr, "\n")
 	if s.mode == prompt.ModeAsk {
@@ -389,7 +379,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	s.registry = buildRegistry(s.cfg, s.mode, s)
 	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 
-	if strings.TrimSpace(s.cfg.Model) == "" {
+	if !s.cfg.HasAnyEffectiveModel() {
 		s.runSetupWizard(ctx, sc)
 		s.invalidateClientCache()
 		s.client = s.clientForMode(s.mode)
@@ -823,7 +813,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	fmt.Fprintf(os.Stderr, "codient: %s set to %q (saved)\n", key, value)
 
 	switch key {
-	case "model", "base_url", "api_key":
+	case "model", "base_url", "api_key", "max_concurrent":
 		s.invalidateClientCache()
 		s.client = s.clientForMode(s.mode)
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
@@ -836,6 +826,11 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 		"plan_api_key", "build_api_key", "ask_api_key":
 		s.invalidateClientCache()
 		s.client = s.clientForMode(s.mode)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+	case "fetch_allow_hosts", "fetch_preapproved", "fetch_max_bytes", "fetch_timeout_sec",
+		"fetch_web_rate_per_sec", "fetch_web_rate_burst",
+		"search_url", "search_max_results":
+		s.registry = buildRegistry(s.cfg, s.mode, s)
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 	case "autocheck_cmd":
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
@@ -895,6 +890,8 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  fetch_preapproved:     %v\n", s.cfg.FetchPreapproved)
 	fmt.Fprintf(w, "  fetch_max_bytes:       %d\n", s.cfg.FetchMaxBytes)
 	fmt.Fprintf(w, "  fetch_timeout_sec:     %d\n", s.cfg.FetchTimeoutSec)
+	fmt.Fprintf(w, "  fetch_web_rate_per_sec: %d\n", s.cfg.FetchWebRatePerSec)
+	fmt.Fprintf(w, "  fetch_web_rate_burst:   %d\n", s.cfg.FetchWebRateBurst)
 	fmt.Fprintf(w, "\n  -- Search --\n")
 	fmt.Fprintf(w, "  search_url:            %s\n", s.cfg.SearchBaseURL)
 	fmt.Fprintf(w, "  search_max_results:    %d\n", s.cfg.SearchMaxResults)
@@ -971,6 +968,10 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return strconv.Itoa(s.cfg.FetchMaxBytes), true
 	case "fetch_timeout_sec":
 		return strconv.Itoa(s.cfg.FetchTimeoutSec), true
+	case "fetch_web_rate_per_sec":
+		return strconv.Itoa(s.cfg.FetchWebRatePerSec), true
+	case "fetch_web_rate_burst":
+		return strconv.Itoa(s.cfg.FetchWebRateBurst), true
 	case "search_url":
 		return s.cfg.SearchBaseURL, true
 	case "search_max_results":
@@ -1097,6 +1098,33 @@ func (s *session) setConfig(key, value string) error {
 			return fmt.Errorf("fetch_timeout_sec must be a positive integer")
 		}
 		s.cfg.FetchTimeoutSec = n
+	case "fetch_web_rate_per_sec":
+		n, err := parseInt(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("fetch_web_rate_per_sec must be a non-negative integer (0 disables)")
+		}
+		if n > config.MaxFetchWebRatePerSec {
+			n = config.MaxFetchWebRatePerSec
+		}
+		s.cfg.FetchWebRatePerSec = n
+		if n == 0 {
+			s.cfg.FetchWebRateBurst = 0
+		} else if s.cfg.FetchWebRateBurst < 1 {
+			b := n
+			if b > config.MaxFetchWebRateBurst {
+				b = config.MaxFetchWebRateBurst
+			}
+			s.cfg.FetchWebRateBurst = b
+		}
+	case "fetch_web_rate_burst":
+		n, err := parseInt(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("fetch_web_rate_burst must be a non-negative integer")
+		}
+		if n > config.MaxFetchWebRateBurst {
+			n = config.MaxFetchWebRateBurst
+		}
+		s.cfg.FetchWebRateBurst = n
 	case "search_url":
 		s.cfg.SearchBaseURL = strings.TrimRight(value, "/")
 	case "search_max_results":

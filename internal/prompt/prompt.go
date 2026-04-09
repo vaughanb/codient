@@ -107,7 +107,8 @@ func sectionToolUsageReadOnly() string {
 - Follow each tool's JSON schema exactly; **only call tools listed in this session**. Calling a tool that does not exist (e.g. todo_write, TodoWrite, create_plan) wastes a turn. If you are unsure whether a tool exists, check the list below.
 - **Read-only tools only**: list, search, read, and grep the workspace—no writes or subprocesses.
 - Prefer gathering evidence with tools rather than guessing; ask the user only when the repository cannot resolve ambiguity.
-- Use normal tool-calling channels—do not paste fake tool calls as plain text in the assistant message.`
+- Use normal tool-calling channels—do not paste fake tool calls as plain text in the assistant message.
+- **Parallel tool calls**: When multiple tool calls are **independent** (none needs another's output), call them **all in the same response** so they run concurrently. Typical batches: reading several files at once, grepping for different patterns, listing and searching simultaneously. Only sequence calls when one genuinely depends on the result of another.`
 }
 
 func sectionReadOnlyScope() string {
@@ -185,12 +186,13 @@ func sectionToolUsage() string {
 - Follow each tool's JSON schema exactly; **only call tools listed in this session**. Calling a tool that does not exist (e.g. todo_write, TodoWrite, create_plan) wastes a turn. If you are unsure whether a tool exists, check the list below.
 - Prefer **gathering context** (list, search, read) before editing.
 - If unsure, use more tools rather than guessing; only ask the user when the repository cannot answer.
-- Use normal tool-calling channels—do not paste fake tool calls as plain text in the assistant message.`
+- Use normal tool-calling channels—do not paste fake tool calls as plain text in the assistant message.
+- **Parallel tool calls**: When multiple tool calls are **independent** (none needs another's output), call them **all in the same response** so they run concurrently. Typical batches: reading several files at once, grepping for different patterns, running tests after writing multiple files, searching before and after a change. Only sequence calls when one genuinely depends on the result of another.`
 }
 
 func sectionCodeChanges() string {
 	return "## Code changes\n\n" +
-		"- For **edits to existing files**, prefer **str_replace** for single-site changes or **patch_file** (unified diff) for multi-site edits; use **write_file** only for new files or when rewriting most of a file.\n" +
+		"- For **edits to existing files**, prefer **str_replace** for single-site changes or **patch_file** (unified diff) for multi-site edits. When **adding new content to the end** of a file (new functions, test cases, imports, blocks), **always use insert_lines** — never str_replace for appends. Use **write_file** only for new files or when rewriting most of a file.\n" +
 		"- Before editing an **existing** file, **read** the relevant sections so you do not clobber context.\n" +
 		"- Keep changes **runnable**: fix imports, respect existing style, and run checks (e.g. `go test`) via **run_command**; use **ensure_dir** to create directories portably; use **run_shell** only when you need shell features (pipelines, env vars).\n" +
 		"- Avoid unnecessary churn or unrelated refactors.\n" +
@@ -270,6 +272,9 @@ func sectionPerToolNotes(p Params) string {
 	if _, ok := set["patch_file"]; ok {
 		b.WriteString("- **patch_file**: Apply a **unified diff** to an existing file (`path` + `diff`). Use `@@ -old,count +new,count @@` hunk headers with context (` `), additions (`+`), and deletions (`-`). Context lines must match the file. **Prefer str_replace for a single edit**; use patch_file for multi-hunk or large edits.\n")
 	}
+	if _, ok := set["insert_lines"]; ok {
+		b.WriteString("- **insert_lines**: Insert text at a position in an existing file. `position` defaults to `\"end\"` (append); use `\"beginning\"` to prepend or `after_line` (1-based) for a specific location. **Best for appending new functions, tests, or blocks to the end of a file** — avoids the exact-match difficulty of str_replace at EOF.\n")
+	}
 	if _, ok := set["remove_path"]; ok {
 		b.WriteString("- **remove_path**: Deletes a file or directory tree under the workspace (same idea as `rm -rf`).\n")
 	}
@@ -280,7 +285,7 @@ func sectionPerToolNotes(p Params) string {
 		b.WriteString("- **copy_path**: Copies a file or directory tree within the workspace (symlinks not supported).\n")
 	}
 	if _, ok := set["write_file"]; ok && strings.TrimSpace(p.AutoCheckResolved) != "" {
-		b.WriteString(fmt.Sprintf("- **Auto-check**: After successful **write_file**, **str_replace**, **patch_file**, **remove_path**, **move_path**, or **copy_path**, the host runs `%s`. If it fails, you receive `[auto-check]` feedback—fix those errors before moving on.\n", strings.TrimSpace(p.AutoCheckResolved)))
+		b.WriteString(fmt.Sprintf("- **Auto-check**: After successful **write_file**, **str_replace**, **patch_file**, **insert_lines**, **remove_path**, **move_path**, or **copy_path**, the host runs `%s`. If it fails, you receive `[auto-check]` feedback—fix those errors before moving on.\n", strings.TrimSpace(p.AutoCheckResolved)))
 	}
 	if _, ok := set["run_command"]; ok && len(cfg.ExecAllowlist) > 0 {
 		b.WriteString(fmt.Sprintf("- **run_command**: JSON `{\"argv\":[\"program\",\"arg1\",...],\"cwd\":\".\"}`. `argv[0]` must be a bare name (no path separators). Allowlisted: **%s**. Output includes `exit_code` and combined stdout/stderr. Example: `{\"argv\":[\"go\",\"test\",\"./...\"],\"cwd\":\".\"}`.\n", strings.Join(cfg.ExecAllowlist, ", ")))

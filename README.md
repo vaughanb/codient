@@ -66,6 +66,25 @@ All settings live in a single JSON file. Use `/config` to view and edit, or edit
 }
 ```
 
+**Per-mode models and endpoints** — Under `models`, you can override `base_url`, `api_key`, and `model` for `plan`, `build`, and `ask`. Any field left out inherits from the top-level connection. Use this for a remote planning API and a local implementation server, for example:
+
+```json
+{
+  "base_url": "http://127.0.0.1:1234/v1",
+  "api_key": "codient",
+  "model": "qwen3-coder-30b",
+  "models": {
+    "plan": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-...",
+      "model": "gpt-4.1"
+    }
+  }
+}
+```
+
+The interactive `/setup` wizard can also configure a separate plan server after you pick the default model. Slash commands `/config plan_base_url`, `plan_api_key`, `plan_model` (and `build_*`, `ask_*`) mirror these fields.
+
 ### `/config` reference
 
 Run `/config` with no arguments to see all current values. `/config <key>` shows one value. `/config <key> <value>` sets and persists.
@@ -75,7 +94,10 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | **Connection** | | |
 | `base_url` | API base URL including `/v1` | `http://127.0.0.1:1234/v1` |
 | `api_key` | Sent as `Authorization` bearer token | `codient` |
-| `model` | Model id for chat completions | *(none — must be set)* |
+| `model` | Default model id (used by modes that have no override) | *(none — must be set for typical use)* |
+| `plan_model`, `build_model`, `ask_model` | Model id for that mode only | inherit `model` |
+| `plan_base_url`, `build_base_url`, `ask_base_url` | API base URL for that mode | inherit `base_url` |
+| `plan_api_key`, `build_api_key`, `ask_api_key` | API key for that mode | inherit `api_key` |
 | **Defaults** | | |
 | `mode` | Default mode: `build`, `ask`, or `plan` | `build` |
 | `workspace` | Root for workspace tools | *(process working directory)* |
@@ -96,6 +118,8 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `fetch_preapproved` | Built-in documentation-domain preset for `fetch_url` | `true` |
 | `fetch_max_bytes` | Max response body bytes (max 10 MiB) | `1048576` |
 | `fetch_timeout_sec` | Per-fetch timeout (max 300) | `30` |
+| `fetch_web_rate_per_sec` | Token-bucket rate limit for `fetch_url` and `web_search` combined (`0` = off, max 100) | `0` |
+| `fetch_web_rate_burst` | Burst size for that limiter (`0` with a positive rate defaults to the rate; max 50) | `0` |
 | **Search** | | |
 | `search_url` | SearXNG base URL (e.g. `http://localhost:8888`). Enables `web_search`. | *(empty)* |
 | `search_max_results` | Results per query (max 10) | `5` |
@@ -256,6 +280,7 @@ Assistant text can stream to the terminal as it is generated (`-stream-reply`, d
 ```bash
 make check       # vet + unit tests only (no live LLM; safe for CI)
 make test-unit   # same tests as check, without vet
+make test-race   # race detector (also run in GitHub Actions CI after check + build)
 make test        # full suite: unit tests + live integration (needs ~/.codient/config.json model + API)
 ```
 
@@ -270,4 +295,4 @@ make test-integration-strict  # + strict tool tests (no run_command test unless 
 
 ## License
 
-No license file is set in this repository yet; add one if you intend to open-source under specific terms.
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.

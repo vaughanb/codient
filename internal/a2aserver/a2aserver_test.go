@@ -11,6 +11,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/openai/openai-go/v3"
 
+	"codient/internal/agent"
 	"codient/internal/config"
 	"codient/internal/prompt"
 )
@@ -67,8 +68,10 @@ func testConfig(t *testing.T) *config.Config {
 func startServer(t *testing.T, cfg *config.Config, llm *mockLLM) *httptest.Server {
 	t.Helper()
 	handler := New(Config{
-		Cfg:     cfg,
-		LLM:     llm,
+		Cfg: cfg,
+		LLMForMode: func(prompt.Mode) agent.ChatClient {
+			return llm
+		},
 		Version: "test",
 		Addr:    "127.0.0.1:0",
 	})

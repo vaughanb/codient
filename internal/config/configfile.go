@@ -8,8 +8,13 @@ import (
 	"strings"
 )
 
+const currentSchemaVersion = 1
+
 // PersistentConfig holds all user-configurable settings saved to ~/.codient/config.json.
 type PersistentConfig struct {
+	// Schema version for migration support.
+	SchemaVersion int `json:"schema_version,omitempty"`
+
 	// Connection
 	BaseURL string `json:"base_url,omitempty"`
 	APIKey  string `json:"api_key,omitempty"`
@@ -43,6 +48,9 @@ type PersistentConfig struct {
 	FetchPreapproved *bool  `json:"fetch_preapproved,omitempty"`
 	FetchMaxBytes    int    `json:"fetch_max_bytes,omitempty"`
 	FetchTimeoutSec  int    `json:"fetch_timeout_sec,omitempty"`
+	// FetchWebRatePerSec limits combined fetch_url + web_search (0 = off).
+	FetchWebRatePerSec int `json:"fetch_web_rate_per_sec,omitempty"`
+	FetchWebRateBurst  int `json:"fetch_web_rate_burst,omitempty"`
 
 	// Search
 	SearchBaseURL    string `json:"search_url,omitempty"`
@@ -104,6 +112,19 @@ func configFilePath() (string, error) {
 	return filepath.Join(dir, "config.json"), nil
 }
 
+// migrateConfig migrates a config from an older schema version to the current version.
+// Returns an error if the config is from a newer version than this binary supports.
+func migrateConfig(pc *PersistentConfig) error {
+	if pc.SchemaVersion > currentSchemaVersion {
+		return fmt.Errorf("config file is from a newer version of codient (schema version %d); this binary supports up to version %d — please upgrade codient", pc.SchemaVersion, currentSchemaVersion)
+	}
+	// Version 0 → 1: no structural changes, just add version field.
+	if pc.SchemaVersion == 0 {
+		pc.SchemaVersion = 1
+	}
+	return nil
+}
+
 // LoadPersistentConfig reads ~/.codient/config.json.
 // Returns a zero-value struct (not an error) if the file does not exist.
 func LoadPersistentConfig() (*PersistentConfig, error) {
@@ -122,11 +143,17 @@ func LoadPersistentConfig() (*PersistentConfig, error) {
 	if err := json.Unmarshal(data, &pc); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if err := migrateConfig(&pc); err != nil {
+		return nil, err
+	}
 	return &pc, nil
 }
 
 // SavePersistentConfig writes the config atomically to ~/.codient/config.json.
 func SavePersistentConfig(pc *PersistentConfig) error {
+	// Always stamp the current schema version.
+	pc.SchemaVersion = currentSchemaVersion
+
 	dir, err := stateDir()
 	if err != nil {
 		return err
@@ -153,34 +180,36 @@ func SavePersistentConfig(pc *PersistentConfig) error {
 // ConfigToPersistent builds a PersistentConfig from the runtime Config for saving.
 func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	pc := &PersistentConfig{
-		BaseURL:          cfg.BaseURL,
-		APIKey:           cfg.APIKey,
-		Model:            cfg.Model,
-		Mode:             cfg.Mode,
-		Workspace:        cfg.Workspace,
-		MaxConcurrent:    cfg.MaxConcurrent,
-		ExecAllowlist:    strings.Join(cfg.ExecAllowlist, ","),
-		ExecTimeoutSec:   cfg.ExecTimeoutSeconds,
-		ExecMaxOutBytes:  cfg.ExecMaxOutputBytes,
-		ContextWindow:    cfg.ContextWindowTokens,
-		ContextReserve:   cfg.ContextReserveTokens,
-		MaxLLMRetries:    cfg.MaxLLMRetries,
-		StreamWithTools:  cfg.StreamWithTools,
-		FetchAllowHosts:  strings.Join(cfg.FetchAllowHosts, ","),
-		FetchMaxBytes:    cfg.FetchMaxBytes,
-		FetchTimeoutSec:  cfg.FetchTimeoutSec,
-		SearchBaseURL:    cfg.SearchBaseURL,
-		SearchMaxResults: cfg.SearchMaxResults,
-		AutoCompactPct:   cfg.AutoCompactPct,
-		AutoCheckCmd:     cfg.AutoCheckCmd,
-		Plain:            cfg.Plain,
-		Quiet:            cfg.Quiet,
-		Verbose:          cfg.Verbose,
-		LogPath:          cfg.LogPath,
-		Progress:         cfg.Progress,
-		DesignSaveDir:    cfg.DesignSaveDir,
-		ProjectContext:   cfg.ProjectContext,
-		AstGrep:          cfg.AstGrep,
+		BaseURL:            cfg.BaseURL,
+		APIKey:             cfg.APIKey,
+		Model:              cfg.Model,
+		Mode:               cfg.Mode,
+		Workspace:          cfg.Workspace,
+		MaxConcurrent:      cfg.MaxConcurrent,
+		ExecAllowlist:      strings.Join(cfg.ExecAllowlist, ","),
+		ExecTimeoutSec:     cfg.ExecTimeoutSeconds,
+		ExecMaxOutBytes:    cfg.ExecMaxOutputBytes,
+		ContextWindow:      cfg.ContextWindowTokens,
+		ContextReserve:     cfg.ContextReserveTokens,
+		MaxLLMRetries:      cfg.MaxLLMRetries,
+		StreamWithTools:    cfg.StreamWithTools,
+		FetchAllowHosts:    strings.Join(cfg.FetchAllowHosts, ","),
+		FetchMaxBytes:      cfg.FetchMaxBytes,
+		FetchTimeoutSec:    cfg.FetchTimeoutSec,
+		FetchWebRatePerSec: cfg.FetchWebRatePerSec,
+		FetchWebRateBurst:  cfg.FetchWebRateBurst,
+		SearchBaseURL:      cfg.SearchBaseURL,
+		SearchMaxResults:   cfg.SearchMaxResults,
+		AutoCompactPct:     cfg.AutoCompactPct,
+		AutoCheckCmd:       cfg.AutoCheckCmd,
+		Plain:              cfg.Plain,
+		Quiet:              cfg.Quiet,
+		Verbose:            cfg.Verbose,
+		LogPath:            cfg.LogPath,
+		Progress:           cfg.Progress,
+		DesignSaveDir:      cfg.DesignSaveDir,
+		ProjectContext:     cfg.ProjectContext,
+		AstGrep:            cfg.AstGrep,
 	}
 	if len(cfg.Models) > 0 {
 		pc.Models = make(map[string]*PersistentModelProfile, len(cfg.Models))

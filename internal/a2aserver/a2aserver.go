@@ -23,11 +23,13 @@ import (
 
 // Config holds everything the A2A server needs to handle incoming tasks.
 type Config struct {
-	Cfg     *config.Config
-	LLM     agent.ChatClient
-	Log     *agentlog.Logger
-	Version string
-	Addr    string
+	Cfg *config.Config
+	// LLMForMode returns the chat client for build, ask, or plan. Required for correct
+	// per-mode API routing when models.* overrides use different base URLs.
+	LLMForMode func(prompt.Mode) agent.ChatClient
+	Log        *agentlog.Logger
+	Version    string
+	Addr       string
 }
 
 // New creates an http.Handler (ServeMux) that implements the A2A protocol.
@@ -35,7 +37,7 @@ type Config struct {
 // JSON-RPC requests at /a2a.
 func New(c Config) http.Handler {
 	card := buildAgentCard(c.Addr, c.Version)
-	exec := &executor{cfg: c.Cfg, llm: c.LLM, log: c.Log}
+	exec := &executor{cfg: c.Cfg, llmForMode: c.LLMForMode, log: c.Log}
 	caps := &a2a.AgentCapabilities{Streaming: true}
 	handler := a2asrv.NewHandler(exec, a2asrv.WithCapabilityChecks(caps))
 
@@ -85,9 +87,9 @@ func buildAgentCard(addr, version string) *a2a.AgentCard {
 
 // executor implements a2asrv.AgentExecutor.
 type executor struct {
-	cfg *config.Config
-	llm agent.ChatClient
-	log *agentlog.Logger
+	cfg        *config.Config
+	llmForMode func(prompt.Mode) agent.ChatClient
+	log        *agentlog.Logger
 }
 
 var _ a2asrv.AgentExecutor = (*executor)(nil)
@@ -113,8 +115,20 @@ func (e *executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 		reg := registryForMode(e.cfg, mode)
 		sysprompt := systemPromptForMode(e.cfg, reg, mode)
 
+		if e.llmForMode == nil {
+			msg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("server misconfigured: LLMForMode is nil"))
+			yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, msg), nil)
+			return
+		}
+		llm := e.llmForMode(mode)
+		if llm == nil {
+			msg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("server misconfigured: no LLM client for mode"))
+			yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, msg), nil)
+			return
+		}
+
 		runner := &agent.Runner{
-			LLM:   e.llm,
+			LLM:   llm,
 			Cfg:   e.cfg,
 			Tools: reg,
 			Log:   e.log,
@@ -179,8 +193,9 @@ func resolveMode(meta map[string]any) prompt.Mode {
 
 func registryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
 	ws := cfg.EffectiveWorkspace()
-	fetch := fetchOpts(cfg)
-	search := searchOpts(cfg)
+	netLimit := tools.NewNetworkLimiter(cfg.FetchWebRatePerSec, cfg.FetchWebRateBurst)
+	fetch := fetchOpts(cfg, netLimit)
+	search := searchOpts(cfg, netLimit)
 	sgPath := cfg.AstGrep
 	switch mode {
 	case prompt.ModeAsk:
@@ -200,12 +215,13 @@ func registryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
 	}
 }
 
-func fetchOpts(cfg *config.Config) *tools.FetchOptions {
+func fetchOpts(cfg *config.Config, netLimit *tools.RateLimiter) *tools.FetchOptions {
 	opts := &tools.FetchOptions{
 		AllowHosts:         append([]string(nil), cfg.FetchAllowHosts...),
 		MaxBytes:           cfg.FetchMaxBytes,
 		TimeoutSec:         cfg.FetchTimeoutSec,
 		IncludePreapproved: cfg.FetchPreapproved,
+		RateLimiter:        netLimit,
 	}
 	if len(opts.AllowHosts) == 0 && !opts.IncludePreapproved {
 		return nil
@@ -213,14 +229,15 @@ func fetchOpts(cfg *config.Config) *tools.FetchOptions {
 	return opts
 }
 
-func searchOpts(cfg *config.Config) *tools.SearchOptions {
+func searchOpts(cfg *config.Config, netLimit *tools.RateLimiter) *tools.SearchOptions {
 	if cfg.SearchBaseURL == "" {
 		return nil
 	}
 	return &tools.SearchOptions{
-		BaseURL:    cfg.SearchBaseURL,
-		MaxResults: cfg.SearchMaxResults,
-		TimeoutSec: 30,
+		BaseURL:     cfg.SearchBaseURL,
+		MaxResults:  cfg.SearchMaxResults,
+		TimeoutSec:  30,
+		RateLimiter: netLimit,
 	}
 }
 

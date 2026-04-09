@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -60,6 +61,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.AutoCompactPct != defaultAutoCompactPct {
 		t.Fatalf("AutoCompactPct: got %d", c.AutoCompactPct)
 	}
+	if c.FetchWebRatePerSec != 0 || c.FetchWebRateBurst != 0 {
+		t.Fatalf("default fetch web rate should be off: got %d/%d", c.FetchWebRatePerSec, c.FetchWebRateBurst)
+	}
 }
 
 func TestLoad_FromConfigFile(t *testing.T) {
@@ -95,6 +99,28 @@ func TestLoad_FromConfigFile(t *testing.T) {
 	}
 }
 
+func TestLoad_FetchWebRateClamped(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	pc := &PersistentConfig{
+		FetchWebRatePerSec: 500,
+		FetchWebRateBurst:  200,
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.FetchWebRatePerSec != MaxFetchWebRatePerSec {
+		t.Fatalf("rate: got %d want %d", c.FetchWebRatePerSec, MaxFetchWebRatePerSec)
+	}
+	if c.FetchWebRateBurst != MaxFetchWebRateBurst {
+		t.Fatalf("burst: got %d want %d", c.FetchWebRateBurst, MaxFetchWebRateBurst)
+	}
+}
+
 func TestLoad_InvalidMaxConcurrent(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CODIENT_STATE_DIR", dir)
@@ -119,6 +145,31 @@ func TestRequireModel(t *testing.T) {
 	c.Model = "x"
 	if err := c.RequireModel(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRequireModelForMode(t *testing.T) {
+	c := &Config{Model: ""}
+	if err := c.RequireModelForMode("build"); err == nil {
+		t.Fatal("expected error")
+	}
+	c.Models = map[string]*ModelProfile{"build": {Model: "local"}}
+	if err := c.RequireModelForMode("build"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RequireModelForMode("plan"); err == nil {
+		t.Fatal("expected error for plan with no override and empty default")
+	}
+}
+
+func TestHasAnyEffectiveModel(t *testing.T) {
+	c := &Config{Model: ""}
+	if c.HasAnyEffectiveModel() {
+		t.Fatal("expected false")
+	}
+	c.Models = map[string]*ModelProfile{"plan": {Model: "p", BaseURL: "http://x/v1"}}
+	if !c.HasAnyEffectiveModel() {
+		t.Fatal("expected true from plan profile")
 	}
 }
 
@@ -435,14 +486,16 @@ func TestConfigToPersistent_RoundTrip(t *testing.T) {
 	t.Setenv("CODIENT_STATE_DIR", dir)
 
 	cfg := &Config{
-		BaseURL:          "http://test/v1",
-		APIKey:           "key",
-		Model:            "m",
-		MaxConcurrent:    5,
-		SearchBaseURL:    "http://search",
-		FetchPreapproved: false,
-		StreamReply:      false,
-		DesignSave:       false,
+		BaseURL:            "http://test/v1",
+		APIKey:             "key",
+		Model:              "m",
+		MaxConcurrent:      5,
+		SearchBaseURL:      "http://search",
+		FetchPreapproved:   false,
+		StreamReply:        false,
+		DesignSave:         false,
+		FetchWebRatePerSec: 8,
+		FetchWebRateBurst:  3,
 	}
 	pc := ConfigToPersistent(cfg)
 	if err := SavePersistentConfig(pc); err != nil {
@@ -457,6 +510,9 @@ func TestConfigToPersistent_RoundTrip(t *testing.T) {
 	}
 	if c.FetchPreapproved || c.StreamReply || c.DesignSave {
 		t.Fatalf("*bool round-trip failed: fetch=%v stream=%v design=%v", c.FetchPreapproved, c.StreamReply, c.DesignSave)
+	}
+	if c.FetchWebRatePerSec != 8 || c.FetchWebRateBurst != 3 {
+		t.Fatalf("fetch web rate round-trip: got %d/%d", c.FetchWebRatePerSec, c.FetchWebRateBurst)
 	}
 }
 
@@ -632,5 +688,108 @@ func TestLoad_ModelsFromConfigFile(t *testing.T) {
 	base3, _, model3 := c.EffectiveModelConfig("ask")
 	if base3 != "http://default/v1" || model3 != "default" {
 		t.Fatalf("ask effective: base=%q model=%q", base3, model3)
+	}
+}
+
+func TestSchemaVersionMigration_Version0(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	// Create a config file without schema_version (version 0).
+	configPath := filepath.Join(dir, "config.json")
+	oldConfig := `{"base_url":"http://old/v1","model":"old-model"}`
+	if err := os.WriteFile(configPath, []byte(oldConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pc, err := LoadPersistentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc.SchemaVersion != 1 {
+		t.Fatalf("expected migration to version 1, got %d", pc.SchemaVersion)
+	}
+	if pc.BaseURL != "http://old/v1" || pc.Model != "old-model" {
+		t.Fatalf("data should be preserved: base_url=%q model=%q", pc.BaseURL, pc.Model)
+	}
+}
+
+func TestSchemaVersionMigration_CurrentVersion(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	pc := &PersistentConfig{
+		SchemaVersion: currentSchemaVersion,
+		Model:         "test-model",
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadPersistentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != currentSchemaVersion {
+		t.Fatalf("version should remain %d, got %d", currentSchemaVersion, loaded.SchemaVersion)
+	}
+	if loaded.Model != "test-model" {
+		t.Fatalf("model: got %q", loaded.Model)
+	}
+}
+
+func TestSchemaVersionMigration_FutureVersion(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	// Manually write a config with a future schema version.
+	configPath := filepath.Join(dir, "config.json")
+	futureConfig := `{"schema_version":99,"model":"future-model"}`
+	if err := os.WriteFile(configPath, []byte(futureConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadPersistentConfig()
+	if err == nil {
+		t.Fatal("expected error when loading future schema version")
+	}
+	if !strings.Contains(err.Error(), "newer version") {
+		t.Fatalf("error should mention newer version: %v", err)
+	}
+	if !strings.Contains(err.Error(), "99") {
+		t.Fatalf("error should mention version 99: %v", err)
+	}
+}
+
+func TestSchemaVersionAlwaysStamped(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	pc := &PersistentConfig{Model: "test"}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+
+	configPath := filepath.Join(dir, "config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+
+	version, ok := raw["schema_version"]
+	if !ok {
+		t.Fatal("schema_version field missing in saved config")
+	}
+	versionFloat, ok := version.(float64)
+	if !ok {
+		t.Fatalf("schema_version should be numeric, got %T", version)
+	}
+	if int(versionFloat) != currentSchemaVersion {
+		t.Fatalf("schema_version should be %d, got %d", currentSchemaVersion, int(versionFloat))
 	}
 }

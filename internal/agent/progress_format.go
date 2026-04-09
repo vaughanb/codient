@@ -33,7 +33,7 @@ func formatProgressDur(d time.Duration) string {
 func ProgressToolCompact(toolName string, argsJSON []byte) string {
 	sum := agentlog.SummarizeArgs(toolName, argsJSON)
 	switch toolName {
-	case "read_file", "write_file", "str_replace", "patch_file", "ensure_dir", "path_stat", "remove_path":
+	case "read_file", "write_file", "str_replace", "patch_file", "insert_lines", "ensure_dir", "path_stat", "remove_path":
 		if p, ok := sum["path"].(string); ok && p != "" {
 			return toolName + " " + p
 		}
@@ -144,6 +144,11 @@ func progressToolActionPhrase(toolName string, argsJSON []byte, sum map[string]a
 			return fmt.Sprintf("patching %s", p)
 		}
 		return "patching a file"
+	case "insert_lines":
+		if p, ok := sum["path"].(string); ok && p != "" {
+			return fmt.Sprintf("inserting into %s", p)
+		}
+		return "inserting lines"
 	case "ensure_dir":
 		if p, ok := sum["path"].(string); ok && p != "" {
 			return fmt.Sprintf("ensuring directory %s", p)

@@ -6,12 +6,13 @@ import (
 	"codient/internal/tools"
 )
 
-func fetchOptsFrom(cfg *config.Config, s *session) *tools.FetchOptions {
+func fetchOptsFrom(cfg *config.Config, s *session, netLimit *tools.RateLimiter) *tools.FetchOptions {
 	opts := &tools.FetchOptions{
 		AllowHosts:         append([]string(nil), cfg.FetchAllowHosts...),
 		MaxBytes:           cfg.FetchMaxBytes,
 		TimeoutSec:         cfg.FetchTimeoutSec,
 		IncludePreapproved: cfg.FetchPreapproved,
+		RateLimiter:        netLimit,
 	}
 	interactive := s != nil && s.scanner != nil && stdinIsInteractive()
 	if interactive {
@@ -28,20 +29,22 @@ func fetchOptsFrom(cfg *config.Config, s *session) *tools.FetchOptions {
 	return opts
 }
 
-func searchOptsFrom(cfg *config.Config) *tools.SearchOptions {
+func searchOptsFrom(cfg *config.Config, netLimit *tools.RateLimiter) *tools.SearchOptions {
 	if cfg.SearchBaseURL == "" {
 		return nil
 	}
 	return &tools.SearchOptions{
-		BaseURL:    cfg.SearchBaseURL,
-		MaxResults: cfg.SearchMaxResults,
-		TimeoutSec: 30,
+		BaseURL:     cfg.SearchBaseURL,
+		MaxResults:  cfg.SearchMaxResults,
+		TimeoutSec:  30,
+		RateLimiter: netLimit,
 	}
 }
 
 func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session) *tools.Registry {
-	fetch := fetchOptsFrom(cfg, s)
-	search := searchOptsFrom(cfg)
+	netLimit := tools.NewNetworkLimiter(cfg.FetchWebRatePerSec, cfg.FetchWebRateBurst)
+	fetch := fetchOptsFrom(cfg, s, netLimit)
+	search := searchOptsFrom(cfg, netLimit)
 	sgPath := cfg.AstGrep
 	if mode == prompt.ModeAsk {
 		return tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search, sgPath)

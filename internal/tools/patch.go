@@ -74,6 +74,7 @@ func parseUnifiedDiff(diff string) ([]diffHunk, error) {
 				break
 			}
 			if l == "" {
+				hLines = append(hLines, diffLine{Op: ' ', Text: ""})
 				i++
 				continue
 			}
@@ -96,6 +97,20 @@ func parseUnifiedDiff(diff string) ([]diffHunk, error) {
 		}
 		if len(hLines) == 0 {
 			return nil, fmt.Errorf("patch: empty hunk at @@ -%d,%d +%d,%d @@", oldStart, oldCount, newStart, newCount)
+		}
+		// Trim trailing empty context lines that exceed the header counts.
+		// These arise from string formatting artifacts or inter-hunk whitespace;
+		// genuine trailing empty context (matching the header) is preserved.
+		for len(hLines) > 0 {
+			last := hLines[len(hLines)-1]
+			if last.Op != ' ' || last.Text != "" {
+				break
+			}
+			gotO, gotN := countHunkSides(hLines)
+			if gotO == oldCount && gotN == newCount {
+				break
+			}
+			hLines = hLines[:len(hLines)-1]
 		}
 		gotOld, gotNew := countHunkSides(hLines)
 		if oldCount != gotOld {

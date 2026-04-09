@@ -89,6 +89,119 @@ func TestGlobFilesWorkspace(t *testing.T) {
 	}
 }
 
+func TestInsertLinesWorkspace(t *testing.T) {
+	t.Run("append to end (default)", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "f.go")
+		os.WriteFile(f, []byte("line1\nline2\n"), 0o644)
+
+		out, err := insertLinesWorkspace(dir, "f.go", "line3\nline4\n", "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "inserted") {
+			t.Fatalf("unexpected output: %q", out)
+		}
+		got, _ := os.ReadFile(f)
+		if string(got) != "line1\nline2\nline3\nline4\n" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("append to file without trailing newline", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "f.go")
+		os.WriteFile(f, []byte("line1\nline2"), 0o644)
+
+		_, err := insertLinesWorkspace(dir, "f.go", "line3\n", "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(f)
+		if string(got) != "line1\nline2\nline3\n" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("prepend to beginning", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "f.go")
+		os.WriteFile(f, []byte("line2\nline3\n"), 0o644)
+
+		_, err := insertLinesWorkspace(dir, "f.go", "line1\n", "beginning", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(f)
+		if string(got) != "line1\nline2\nline3\n" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("insert after specific line", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "f.go")
+		os.WriteFile(f, []byte("aaa\nbbb\nccc\n"), 0o644)
+
+		_, err := insertLinesWorkspace(dir, "f.go", "INSERTED\n", "", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(f)
+		if string(got) != "aaa\nbbb\nINSERTED\nccc\n" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("after_line beyond file length appends", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "f.go")
+		os.WriteFile(f, []byte("only\n"), 0o644)
+
+		_, err := insertLinesWorkspace(dir, "f.go", "appended\n", "", 999)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(f)
+		if string(got) != "only\nappended\n" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("empty file append", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "f.go")
+		os.WriteFile(f, []byte(""), 0o644)
+
+		_, err := insertLinesWorkspace(dir, "f.go", "first\n", "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(f)
+		if string(got) != "first\n" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("via registry", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0o644)
+		r := Default(dir, nil, nil, nil, "")
+		raw, _ := json.Marshal(map[string]any{"path": "a.txt", "content": "world\n"})
+		out, err := r.Run(context.Background(), "insert_lines", json.RawMessage(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "inserted") {
+			t.Fatalf("got %q", out)
+		}
+		got, _ := os.ReadFile(filepath.Join(dir, "a.txt"))
+		if string(got) != "hello\nworld\n" {
+			t.Fatalf("got %q", got)
+		}
+	})
+}
+
 func TestMutatingToolsViaRegistry(t *testing.T) {
 	dir := t.TempDir()
 	r := Default(dir, nil, nil, nil, "")

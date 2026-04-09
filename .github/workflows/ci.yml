@@ -15,3 +15,4 @@ jobs:
           go-version-file: go.mod
       - run: make check
       - run: make build
+      - run: make test-race

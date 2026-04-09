@@ -21,10 +21,10 @@ func progressArgsHint(name string, sum map[string]any) string {
 		if s, ok := sum["command_prefix"].(string); ok && s != "" {
 			return truncateRunes(s, 80)
 		}
-	case "read_file", "write_file", "str_replace", "patch_file", "ensure_dir", "path_stat", "remove_path":
+	case "read_file", "write_file", "str_replace", "patch_file", "insert_lines", "ensure_dir", "path_stat", "remove_path":
 		if p, ok := sum["path"].(string); ok && p != "" {
 			s := "path=" + p
-			if name == "write_file" {
+			if name == "write_file" || name == "insert_lines" {
 				if n, ok := sum["content_len"].(int); ok {
 					s += fmt.Sprintf(" content_len=%d", n)
 				}

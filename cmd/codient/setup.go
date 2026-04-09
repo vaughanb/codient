@@ -81,7 +81,7 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 		break
 	}
 
-	s.setupPerModeModels(sc, models)
+	s.setupPerModeModels(ctx, sc, models)
 	s.setupWebSearch(ctx, sc)
 
 	if err := saveCurrentConfig(s.cfg); err != nil {
@@ -89,9 +89,14 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 	}
 	fmt.Fprintf(os.Stderr, "\n  Configuration saved. Model set to %s.\n", s.cfg.Model)
 	if s.cfg.HasModeOverrides() {
-		for _, m := range []string{"plan", "build"} {
-			if em := s.cfg.EffectiveModel(m); em != s.cfg.Model {
-				fmt.Fprintf(os.Stderr, "  %s model: %s\n", m, em)
+		for _, m := range []string{"plan", "build", "ask"} {
+			base, _, em := s.cfg.EffectiveModelConfig(m)
+			if em != s.cfg.Model || (s.cfg.Models[m] != nil && s.cfg.Models[m].BaseURL != "") {
+				if s.cfg.Models[m] != nil && s.cfg.Models[m].BaseURL != "" {
+					fmt.Fprintf(os.Stderr, "  %s: %s @ %s\n", m, em, base)
+				} else if em != s.cfg.Model {
+					fmt.Fprintf(os.Stderr, "  %s model: %s\n", m, em)
+				}
 			}
 		}
 	}
@@ -99,14 +104,68 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 	return true
 }
 
-// setupPerModeModels optionally configures different models for plan and build modes.
-func (s *session) setupPerModeModels(sc *bufio.Scanner, models []string) {
-	if len(models) < 2 {
+// setupSeparatePlanEndpoint optionally points plan mode at another OpenAI-compatible server
+// (e.g. cloud for design, local LM for implementation).
+func (s *session) setupSeparatePlanEndpoint(ctx context.Context, sc *bufio.Scanner) {
+	fmt.Fprintf(os.Stderr, "\n  Use a different API base URL for plan mode (e.g. cloud) while keeping your default server for build? [y/N] ")
+	if !sc.Scan() {
+		return
+	}
+	answer := strings.ToLower(strings.TrimSpace(sc.Text()))
+	if answer != "y" && answer != "yes" {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "\n  You can use different models for planning (code analysis) and building (writing code).\n")
-	fmt.Fprintf(os.Stderr, "  Configure per-mode models? [y/N] ")
+	planURL := promptWithDefault(sc, "  Plan mode base URL (include /v1)", "")
+	planURL = strings.TrimRight(strings.TrimSpace(planURL), "/")
+	if planURL == "" {
+		fmt.Fprintf(os.Stderr, "  Skipped (empty URL). You can set plan_base_url later with /config.\n")
+		return
+	}
+
+	planKey := promptWithDefault(sc, "  Plan mode API key", s.cfg.APIKey)
+	probe := openaiclient.NewFromParams(planURL, planKey, "probe", s.cfg.MaxConcurrent)
+	fmt.Fprintf(os.Stderr, "\n  Connecting to plan server %s ...\n", planURL)
+	planModels, err := probe.ListModels(ctx)
+	if err != nil || len(planModels) == 0 {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Could not list models: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "  Server returned no models.\n")
+		}
+		fmt.Fprintf(os.Stderr, "  You can fix this later with /config plan_base_url, plan_api_key, plan_model.\n\n")
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  Models on plan server:\n\n")
+	for i, m := range planModels {
+		fmt.Fprintf(os.Stderr, "    %d) %s\n", i+1, m)
+	}
+	chosen := pickModelFromList(sc, planModels, "  Plan mode model", planModels[0])
+
+	if s.cfg.Models == nil {
+		s.cfg.Models = make(map[string]*config.ModelProfile)
+	}
+	s.cfg.Models["plan"] = &config.ModelProfile{
+		BaseURL: planURL,
+		APIKey:  planKey,
+		Model:   chosen,
+	}
+	fmt.Fprintf(os.Stderr, "  Plan mode will use %q @ %s\n", chosen, planURL)
+}
+
+// setupPerModeModels optionally configures different models (same server) or a separate plan endpoint.
+func (s *session) setupPerModeModels(ctx context.Context, sc *bufio.Scanner, models []string) {
+	s.setupSeparatePlanEndpoint(ctx, sc)
+
+	planRemote := s.cfg.Models != nil && s.cfg.Models["plan"] != nil && s.cfg.Models["plan"].BaseURL != ""
+
+	if len(models) < 2 && !planRemote {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  You can use different models on your **default** server for plan and build.\n")
+	fmt.Fprintf(os.Stderr, "  Configure per-mode models on this server? [y/N] ")
 	if !sc.Scan() {
 		return
 	}
@@ -119,21 +178,25 @@ func (s *session) setupPerModeModels(sc *bufio.Scanner, models []string) {
 		s.cfg.Models = make(map[string]*config.ModelProfile)
 	}
 
-	fmt.Fprintf(os.Stderr, "\n  Available models:\n\n")
+	fmt.Fprintf(os.Stderr, "\n  Available models on default server:\n\n")
 	for i, m := range models {
 		fmt.Fprintf(os.Stderr, "    %d) %s\n", i+1, m)
 	}
 
-	planModel := pickModelFromList(sc, models, "  Plan model (code analysis, implementation design)", s.cfg.Model)
-	if planModel != "" && planModel != s.cfg.Model {
-		if s.cfg.Models["plan"] == nil {
-			s.cfg.Models["plan"] = &config.ModelProfile{}
+	if !planRemote {
+		planModel := pickModelFromList(sc, models, "  Plan model (code analysis, implementation design)", s.cfg.Model)
+		if planModel != "" && planModel != s.cfg.Model {
+			if s.cfg.Models["plan"] == nil {
+				s.cfg.Models["plan"] = &config.ModelProfile{}
+			}
+			s.cfg.Models["plan"].Model = planModel
+			fmt.Fprintf(os.Stderr, "  Plan model set to %s.\n", planModel)
+		} else {
+			delete(s.cfg.Models, "plan")
+			fmt.Fprintf(os.Stderr, "  Plan model: same as default (%s).\n", s.cfg.Model)
 		}
-		s.cfg.Models["plan"].Model = planModel
-		fmt.Fprintf(os.Stderr, "  Plan model set to %s.\n", planModel)
 	} else {
-		delete(s.cfg.Models, "plan")
-		fmt.Fprintf(os.Stderr, "  Plan model: same as default (%s).\n", s.cfg.Model)
+		fmt.Fprintf(os.Stderr, "  Plan mode already uses a separate server; skipping local plan model.\n")
 	}
 
 	buildModel := pickModelFromList(sc, models, "  Build model (writing and editing code)", s.cfg.Model)

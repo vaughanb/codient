@@ -22,9 +22,10 @@ const (
 
 // SearchOptions configures the optional web_search tool backed by a SearXNG instance.
 type SearchOptions struct {
-	BaseURL    string // SearXNG base URL (e.g. "http://localhost:8080").
-	MaxResults int    // Default 5, max 10.
-	TimeoutSec int    // Per-request timeout (default 30s).
+	BaseURL     string       // SearXNG base URL (e.g. "http://localhost:8080").
+	MaxResults  int          // Default 5, max 10.
+	TimeoutSec  int          // Per-request timeout (default 30s).
+	RateLimiter *RateLimiter // Optional rate limiter shared with fetch_url.
 }
 
 func registerWebSearch(r *Registry, opts *SearchOptions, fetch *FetchOptions) {
@@ -54,6 +55,7 @@ func registerWebSearch(r *Registry, opts *SearchOptions, fetch *FetchOptions) {
 		timeout = defaultSearchTimeoutSec * time.Second
 	}
 	baseURL := strings.TrimRight(strings.TrimSpace(opts.BaseURL), "/")
+	limiter := opts.RateLimiter
 
 	r.Register(Tool{
 		Name:        "web_search",
@@ -89,6 +91,9 @@ func registerWebSearch(r *Registry, opts *SearchOptions, fetch *FetchOptions) {
 				}
 			}
 			q := strings.TrimSpace(p.Query)
+			if err := limiter.Wait(ctx); err != nil {
+				return "", fmt.Errorf("rate limit: %w", err)
+			}
 			return searxngSearch(ctx, baseURL, q, n, timeout)
 		},
 	})

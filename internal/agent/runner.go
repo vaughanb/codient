@@ -39,7 +39,7 @@ type AutoCheckOutcome struct {
 
 // mutatingTools lists tool names that change files on disk; used to trigger auto-check.
 var mutatingTools = map[string]struct{}{
-	"write_file": {}, "str_replace": {}, "patch_file": {},
+	"write_file": {}, "str_replace": {}, "patch_file": {}, "insert_lines": {},
 	"remove_path": {}, "move_path": {}, "copy_path": {},
 }
 
@@ -112,6 +112,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
 				OfAuto: openai.String("auto"),
 			}
+			params.ParallelToolCalls = openai.Bool(true)
 		}
 
 		t0 := time.Now()

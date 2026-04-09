@@ -516,6 +516,49 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 	})
 
 	r.Register(Tool{
+		Name: "insert_lines",
+		Description: "Insert text into an existing file at a given line position, or append to the end (default). " +
+			"Best tool for adding new functions, test cases, or blocks to the end of a file. " +
+			"Use position \"end\" (default) to append, \"beginning\" to prepend, or after_line for a specific 1-based line.",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Path relative to workspace root.",
+				},
+				"content": map[string]any{
+					"type":        "string",
+					"description": "Text to insert.",
+				},
+				"position": map[string]any{
+					"type":        "string",
+					"description": "Where to insert: \"end\" (default) or \"beginning\". Ignored when after_line is set.",
+					"enum":        []string{"end", "beginning"},
+				},
+				"after_line": map[string]any{
+					"type":        "integer",
+					"description": "1-based line number; content is inserted after this line. 0 means prepend. Overrides position.",
+				},
+			},
+			"required":             []string{"path", "content"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Path      string `json:"path"`
+				Content   string `json:"content"`
+				Position  string `json:"position"`
+				AfterLine int    `json:"after_line"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			return insertLinesWorkspace(root, p.Path, p.Content, p.Position, p.AfterLine)
+		},
+	})
+
+	r.Register(Tool{
 		Name: "str_replace",
 		Description: "Targeted edit: replace an exact string in a file. " +
 			"Provide enough context in old_string to make the match unique. " +

@@ -185,7 +185,7 @@ func run() int {
 	}
 	s := &session{
 		cfg:              cfg,
-		clientCache:      make(map[string]*openaiclient.Client),
+		llmResolver:      openaiclient.NewModeClientResolver(),
 		agentLog:         agentLog,
 		progressOut:      progressOut,
 		mode:             agentMode,
@@ -218,7 +218,7 @@ func run() int {
 	}
 
 	// Single-turn mode (piped input or explicit -prompt without -repl).
-	if err := cfg.RequireModel(); err != nil {
+	if err := cfg.RequireModelForMode(string(agentMode)); err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 2
 	}

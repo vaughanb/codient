@@ -258,6 +258,43 @@ func TestPatchFileViaRegistry(t *testing.T) {
 	}
 }
 
+func TestParseUnifiedDiff_EmptyContextLine(t *testing.T) {
+	// A bare empty line inside a hunk should be treated as a context line (space-prefixed empty).
+	// Models often emit bare empty lines instead of " " for empty file lines.
+	diff := "@@ -1,3 +1,4 @@\n a\n\n c\n+d\n"
+	hunks, err := parseUnifiedDiff(diff)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(hunks))
+	}
+	h := hunks[0]
+	if h.OldCount != 3 || h.NewCount != 4 {
+		t.Fatalf("counts: old=%d new=%d", h.OldCount, h.NewCount)
+	}
+	// Verify the empty line was parsed as a context line.
+	if h.Lines[1].Op != ' ' || h.Lines[1].Text != "" {
+		t.Fatalf("expected context empty line, got op=%c text=%q", h.Lines[1].Op, h.Lines[1].Text)
+	}
+}
+
+func TestApplyHunks_EmptyContextLine(t *testing.T) {
+	original := "a\n\nc\n"
+	diff := "@@ -1,3 +1,4 @@\n a\n\n c\n+d\n"
+	hunks, err := parseUnifiedDiff(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := applyHunks(original, hunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "a\n\nc\nd\n" {
+		t.Fatalf("got %q", out)
+	}
+}
+
 func TestParseUnifiedDiff_EndToEnd(t *testing.T) {
 	diff := `@@ -1,3 +1,3 @@
  a

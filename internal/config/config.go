@@ -26,6 +26,9 @@ const (
 	defaultAutoCompactPct   = 75
 	defaultSearchMaxResults = 5
 	maxSearchMaxResults     = 10
+	// MaxFetchWebRatePerSec and MaxFetchWebRateBurst cap persisted network rate limits (fetch_url + web_search).
+	MaxFetchWebRatePerSec = 100
+	MaxFetchWebRateBurst  = 50
 )
 
 // ModelProfile holds per-mode LLM connection overrides.
@@ -78,6 +81,10 @@ type Config struct {
 	SearchBaseURL string
 	// SearchMaxResults caps results per web_search query (default 5, max 10).
 	SearchMaxResults int
+	// FetchWebRatePerSec limits combined fetch_url and web_search requests (token bucket). 0 = disabled.
+	FetchWebRatePerSec int
+	// FetchWebRateBurst is the bucket size for FetchWebRatePerSec. If 0 while rate is set, defaults to rate per second.
+	FetchWebRateBurst int
 	// AutoCompactPct is the context usage percentage (0-100) that triggers automatic
 	// compaction (LLM-summarize) between turns. 0 disables. Default 75.
 	AutoCompactPct int
@@ -194,6 +201,24 @@ func Load() (*Config, error) {
 		searchMaxResults = defaultSearchMaxResults
 	}
 
+	fetchWebRate := pc.FetchWebRatePerSec
+	if fetchWebRate < 0 {
+		fetchWebRate = 0
+	}
+	if fetchWebRate > MaxFetchWebRatePerSec {
+		fetchWebRate = MaxFetchWebRatePerSec
+	}
+	fetchWebBurst := pc.FetchWebRateBurst
+	if fetchWebBurst < 0 {
+		fetchWebBurst = 0
+	}
+	if fetchWebRate > 0 && fetchWebBurst == 0 {
+		fetchWebBurst = fetchWebRate
+	}
+	if fetchWebBurst > MaxFetchWebRateBurst {
+		fetchWebBurst = MaxFetchWebRateBurst
+	}
+
 	autoCompactPct := pc.AutoCompactPct
 	if autoCompactPct == 0 && pc.AutoCompactPct == 0 {
 		autoCompactPct = defaultAutoCompactPct
@@ -230,6 +255,8 @@ func Load() (*Config, error) {
 		FetchTimeoutSec:      fetchTimeout,
 		SearchBaseURL:        strings.TrimSpace(pc.SearchBaseURL),
 		SearchMaxResults:     searchMaxResults,
+		FetchWebRatePerSec:   fetchWebRate,
+		FetchWebRateBurst:    fetchWebBurst,
 		AutoCompactPct:       autoCompactPct,
 		AutoCheckCmd:         strings.TrimSpace(pc.AutoCheckCmd),
 		Mode:                 strings.TrimSpace(pc.Mode),
@@ -296,12 +323,32 @@ func Load() (*Config, error) {
 	return c, nil
 }
 
-// RequireModel returns an error if no model is configured (needed for chat completions).
+// RequireModel returns an error if no default model is configured (top-level model field).
 func (c *Config) RequireModel() error {
 	if strings.TrimSpace(c.Model) == "" {
 		return fmt.Errorf("no model configured — use /config model <name> to set one (use -list-models to see available ids)")
 	}
 	return nil
+}
+
+// RequireModelForMode returns an error if the effective model for the given mode
+// (build, ask, or plan) is empty after applying per-mode overrides.
+func (c *Config) RequireModelForMode(mode string) error {
+	if strings.TrimSpace(c.EffectiveModel(mode)) == "" {
+		return fmt.Errorf("no model configured for %s mode — set model or %s_model (see /config)", mode, mode)
+	}
+	return nil
+}
+
+// HasAnyEffectiveModel reports whether at least one of build, ask, or plan has a
+// non-empty effective model (useful before running the first-time setup wizard).
+func (c *Config) HasAnyEffectiveModel() bool {
+	for _, m := range []string{"build", "ask", "plan"} {
+		if strings.TrimSpace(c.EffectiveModel(m)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // EffectiveWorkspace returns the resolved workspace directory (defaults to cwd at startup when unset).

@@ -34,6 +34,8 @@ type FetchOptions struct {
 	PersistFetchHost func(host string) error
 	// IncludePreapproved merges a built-in documentation/code-domain allowlist (plus path rules). Default on; set CODIENT_FETCH_PREAPPROVED=0 to disable.
 	IncludePreapproved bool
+	// RateLimiter throttles fetch requests to prevent abuse. Optional; nil disables rate limiting.
+	RateLimiter *RateLimiter
 }
 
 func registerFetchURL(r *Registry, opts *FetchOptions) {
@@ -59,6 +61,7 @@ func registerFetchURL(r *Registry, opts *FetchOptions) {
 	prompt := opts.PromptUnknownHost
 	persist := opts.PersistFetchHost
 	includePre := opts.IncludePreapproved
+	limiter := opts.RateLimiter
 
 	r.Register(Tool{
 		Name: "fetch_url",
@@ -158,6 +161,9 @@ func registerFetchURL(r *Registry, opts *FetchOptions) {
 				}
 			}
 
+			if err := limiter.Wait(ctx); err != nil {
+				return "", fmt.Errorf("rate limit: %w", err)
+			}
 			return fetchURL(ctx, raw, allowed, limit, timeout)
 		},
 	})

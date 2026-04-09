@@ -262,7 +262,7 @@ func strReplaceWorkspace(root, rel, oldStr, newStr string, replaceAll bool) (str
 	content := string(data)
 	count := strings.Count(content, oldStr)
 	if count == 0 {
-		return "", fmt.Errorf("old_string not found in %s", rel)
+		return "", fmt.Errorf("old_string not found in %s; verify exact whitespace/newlines match the file, or use insert_lines to append content", rel)
 	}
 	if count > 1 && !replaceAll {
 		return "", fmt.Errorf("old_string has %d matches in %s; use replace_all or provide more context to make it unique", count, rel)
@@ -316,4 +316,76 @@ func ensureDirWorkspace(root, rel string) error {
 		return err
 	}
 	return os.MkdirAll(abs, 0o755)
+}
+
+func insertLinesWorkspace(root, rel, content, position string, afterLine int) (string, error) {
+	abs, err := absUnderRoot(root, rel)
+	if err != nil {
+		return "", err
+	}
+	if content == "" {
+		return "", fmt.Errorf("content is empty; insert_lines requires non-empty content")
+	}
+
+	var existing []byte
+	if data, err := os.ReadFile(abs); err == nil {
+		existing = data
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	if len(existing) > 0 && !utf8.Valid(existing) {
+		return "", fmt.Errorf("file is not valid UTF-8")
+	}
+
+	fileText := string(existing)
+	insertText := content
+
+	// Determine insertion point.
+	if afterLine > 0 {
+		lines := strings.Split(fileText, "\n")
+		idx := afterLine
+		if idx > len(lines) {
+			idx = len(lines)
+		}
+		// Ensure the text before the insertion ends with a newline.
+		before := strings.Join(lines[:idx], "\n")
+		if before != "" && !strings.HasSuffix(before, "\n") {
+			before += "\n"
+		}
+		after := strings.Join(lines[idx:], "\n")
+		if !strings.HasSuffix(insertText, "\n") && after != "" {
+			insertText += "\n"
+		}
+		result := before + insertText + after
+		if err := os.WriteFile(abs, []byte(result), 0o644); err != nil {
+			return "", err
+		}
+		inserted := strings.Count(content, "\n") + 1
+		return fmt.Sprintf("inserted %d lines in %s after line %d", inserted, rel, afterLine), nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(position)) {
+	case "beginning":
+		if !strings.HasSuffix(insertText, "\n") && fileText != "" {
+			insertText += "\n"
+		}
+		result := insertText + fileText
+		if err := os.WriteFile(abs, []byte(result), 0o644); err != nil {
+			return "", err
+		}
+		inserted := strings.Count(content, "\n") + 1
+		return fmt.Sprintf("inserted %d lines at beginning of %s", inserted, rel), nil
+
+	default: // "end" or empty
+		if fileText != "" && !strings.HasSuffix(fileText, "\n") {
+			fileText += "\n"
+		}
+		result := fileText + insertText
+		if err := os.WriteFile(abs, []byte(result), 0o644); err != nil {
+			return "", err
+		}
+		inserted := strings.Count(content, "\n") + 1
+		return fmt.Sprintf("inserted %d lines at end of %s", inserted, rel), nil
+	}
 }
