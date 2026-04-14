@@ -83,6 +83,9 @@ type PersistentConfig struct {
 
 	// Embedding model for semantic code search (e.g. "text-embedding-3-small"). Empty disables.
 	EmbeddingModel string `json:"embedding_model,omitempty"`
+
+	// UpdateNotify opt-out: set to false to suppress the interactive update prompt on startup.
+	UpdateNotify *bool `json:"update_notify,omitempty"`
 }
 
 // StateDir returns the codient state directory (~/.codient, or CODIENT_STATE_DIR if set).
@@ -215,6 +218,10 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	if !cfg.DesignSave {
 		f := false
 		pc.DesignSave = &f
+	}
+	if !cfg.UpdateNotify {
+		f := false
+		pc.UpdateNotify = &f
 	}
 	return pc
 }

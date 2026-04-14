@@ -22,6 +22,7 @@ import (
 	"codient/internal/openaiclient"
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
+	"codient/internal/selfupdate"
 	"codient/internal/tools"
 )
 
@@ -49,12 +50,16 @@ func Run() int {
 		a2aFlag       = flag.Bool("a2a", false, "start an A2A (Agent-to-Agent) protocol server instead of the CLI")
 		a2aAddr       = flag.String("a2a-addr", ":8080", "listen address for the A2A server")
 		showVersion   = flag.Bool("version", false, "print version and exit")
+		update        = flag.Bool("update", false, "update codient to the latest release and exit")
 	)
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(Version)
 		return 0
+	}
+	if *update {
+		return runSelfUpdate()
 	}
 
 	cfg, err := config.Load()
@@ -360,6 +365,27 @@ func resolveProjectContext(cfg *config.Config) string {
 		return ""
 	}
 	return projectinfo.Detect(cfg.EffectiveWorkspace())
+}
+
+func runSelfUpdate() int {
+	fmt.Fprintf(os.Stderr, "codient: checking for updates...\n")
+	tag, err := selfupdate.LatestVersion()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codient: %v\n", err)
+		return 1
+	}
+	if !selfupdate.IsNewer(Version, tag) {
+		fmt.Fprintf(os.Stderr, "codient: already up to date (%s)\n", Version)
+		return 0
+	}
+	newVer := strings.TrimPrefix(tag, "v")
+	fmt.Fprintf(os.Stderr, "codient: updating %s -> %s...\n", Version, newVer)
+	if err := selfupdate.Apply(tag); err != nil {
+		fmt.Fprintf(os.Stderr, "codient: update failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "codient: updated to %s\n", newVer)
+	return 0
 }
 
 func resolvePrompt(flagPrompt string) (string, error) {

@@ -30,6 +30,7 @@ import (
 	"codient/internal/planstore"
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
+	"codient/internal/selfupdate"
 	"codient/internal/sessionstore"
 	"codient/internal/slashcmd"
 	"codient/internal/tools"
@@ -512,6 +513,42 @@ func (s *session) runSingleTurn(ctx context.Context, user string) int {
 	return 0
 }
 
+// maybePromptUpdate checks for a newer release and interactively asks the user
+// whether to install it. Skipped versions are persisted so the user is not
+// asked again until an even newer release appears.
+func (s *session) maybePromptUpdate(sc *bufio.Scanner) {
+	if s.cfg.Quiet || !s.cfg.UpdateNotify {
+		return
+	}
+	stateDir, _ := config.StateDir()
+	tag, err := selfupdate.LatestVersion()
+	if err != nil || !selfupdate.IsNewer(Version, tag) {
+		return
+	}
+	if skipped := selfupdate.LoadSkippedVersion(stateDir); skipped == tag {
+		return
+	}
+	newVer := strings.TrimPrefix(tag, "v")
+	fmt.Fprintf(os.Stderr, "codient: update available %s -> %s\n", Version, newVer)
+	fmt.Fprintf(os.Stderr, "Install now? [Y/n] ")
+	answer := ""
+	if sc.Scan() {
+		answer = strings.TrimSpace(sc.Text())
+	}
+	if answer == "" || strings.HasPrefix(strings.ToLower(answer), "y") {
+		fmt.Fprintf(os.Stderr, "codient: downloading %s...\n", newVer)
+		if err := selfupdate.Apply(tag); err != nil {
+			fmt.Fprintf(os.Stderr, "codient: update failed: %v\n", err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "codient: updated to %s — please restart codient\n", newVer)
+		os.Exit(0)
+	}
+	if err := selfupdate.SaveSkippedVersion(stateDir, tag); err == nil {
+		fmt.Fprintf(os.Stderr, "codient: skipped %s (won't ask again for this version)\n", newVer)
+	}
+}
+
 // runSession is the main persistent REPL loop with slash commands and session persistence.
 func (s *session) runSession(ctx context.Context, initialPrompt string, newSession bool) int {
 	ws := s.cfg.EffectiveWorkspace()
@@ -583,6 +620,8 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	if s.currentPlan != nil && s.planPhase != "" && s.planPhase != planstore.PhaseDone {
 		s.handlePlanResume(ctx, sc)
 	}
+
+	s.maybePromptUpdate(sc)
 
 	fmt.Fprintf(os.Stderr, "codient: type /help for commands, /exit to quit\n")
 

@@ -104,6 +104,8 @@ type Config struct {
 	AstGrep string
 	// EmbeddingModel is the model name for /v1/embeddings (e.g. "text-embedding-3-small"). Empty disables semantic search.
 	EmbeddingModel string
+	// UpdateNotify controls whether the interactive update prompt is shown on REPL startup (default true).
+	UpdateNotify bool
 }
 
 // Load reads configuration from the persistent config file.
@@ -218,6 +220,10 @@ func Load() (*Config, error) {
 	if pc.DesignSave != nil {
 		designSave = *pc.DesignSave
 	}
+	updateNotify := true
+	if pc.UpdateNotify != nil {
+		updateNotify = *pc.UpdateNotify
+	}
 
 	c := &Config{
 		BaseURL:              baseURL,
@@ -253,6 +259,7 @@ func Load() (*Config, error) {
 		ProjectContext:       strings.TrimSpace(pc.ProjectContext),
 		AstGrep:              strings.TrimSpace(pc.AstGrep),
 		EmbeddingModel:       strings.TrimSpace(pc.EmbeddingModel),
+		UpdateNotify:         updateNotify,
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	if c.ExecTimeoutSeconds < 1 {

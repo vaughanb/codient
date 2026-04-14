@@ -153,6 +153,8 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | **Tools** | | |
 | `ast_grep` | ast-grep binary path: `auto` (default), explicit path, or `off` to disable | *(auto)* |
 | `embedding_model` | Model id for `/v1/embeddings` (same base URL as chat). Enables the `semantic_search` tool; leave empty to disable | *(empty)* |
+| **Update** | | |
+| `update_notify` | Show interactive update prompt on REPL startup | `true` |
 
 When `fetch_url` receives `Content-Type: text/html`, the body is converted to simplified markdown (headings, links, lists, code) before being returned.
 
@@ -180,6 +182,32 @@ When **`embedding_model`** is set in config, codient indexes text files in the w
 - **When indexing runs:** After you start an interactive session, indexing begins automatically in the background—no separate command. stderr shows progress and completion (or an error if embeddings fail).
 - **Persistence:** The index is stored under **`<workspace>/.codient/index/embeddings.gob`**. On later sessions, unchanged files reuse cached vectors; only new or modified files are re-embedded. If you change **`embedding_model`**, the stored index is invalidated and rebuilt.
 - **Configure:** `/config embedding_model <model-id>`, set `embedding_model` in `~/.codient/config.json`, or use **`/setup`** (optional prompt after chat model selection).
+
+### Auto-update
+
+Codient checks for new releases on GitHub each time an interactive REPL session starts. If a newer version is available (and was not previously skipped), you are prompted:
+
+```
+codient: update available 0.2.0 -> 0.3.0
+Install now? [Y/n]
+```
+
+- **Y** (or Enter) — downloads the release, replaces the binary in-place, and exits. Restart codient to use the new version.
+- **n** — skips this version. Codient remembers the choice (in `~/.codient/update_skip`) and will not ask again until an even newer release is published.
+
+For non-interactive or scripted updates, use the `-update` flag:
+
+```bash
+codient -update
+```
+
+To disable the startup prompt entirely, set `update_notify` to `false` in config:
+
+```
+/config update_notify false
+```
+
+The `-update` flag always works regardless of this setting.
 
 ## Usage
 
@@ -215,6 +243,7 @@ Use `-help` for all flags. Notable options:
 - **`-mode`** — `build` (default), `ask`, or `plan`
 - **`-workspace`** — workspace root (overrides config and cwd)
 - **`-new-session`** — start fresh instead of resuming the latest session
+- **`-update`** — check for a newer release and install it (see [Auto-update](#auto-update))
 - **`-repl`** — explicit REPL (default when stdin is a TTY)
 - **`-system`** — optional extra system prompt merged into the default tool prompt
 - **`-stream` / `-stream-reply`** — streaming behavior
