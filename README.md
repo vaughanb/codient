@@ -18,13 +18,13 @@
 **macOS / Linux:**
 
 ```bash
-curl -sSfL https://raw.githubusercontent.com/vaughanb/codient/main/install.sh | sh
+curl -sSfL https://raw.githubusercontent.com/vaughanb/codient/main/scripts/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/vaughanb/codient/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/vaughanb/codient/main/scripts/install.ps1 | iex
 ```
 
 Both scripts detect your OS and architecture, download the latest release binary, and place it on your PATH. Set `CODIENT_INSTALL_DIR` to override the install location (defaults to `~/.local/bin` on Unix, `%LOCALAPPDATA%\codient` on Windows).
