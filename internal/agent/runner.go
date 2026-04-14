@@ -43,6 +43,19 @@ var mutatingTools = map[string]struct{}{
 	"remove_path": {}, "move_path": {}, "copy_path": {},
 }
 
+// ToolIsMutating reports whether the named tool may modify files on disk.
+func ToolIsMutating(name string) bool {
+	_, ok := mutatingTools[name]
+	return ok
+}
+
+// PostReplyCheckInfo is passed to PostReplyCheck after a text-only model reply.
+type PostReplyCheckInfo struct {
+	Reply     string
+	User      string
+	TurnTools []string // tool names invoked this user turn, in order (may repeat)
+}
+
 // Runner executes multi-step tool use with bounded LLM concurrency (via the ChatClient implementation).
 type Runner struct {
 	LLM   ChatClient
@@ -58,7 +71,7 @@ type Runner struct {
 	// (no tool calls). If it returns a non-empty string, that string is injected as
 	// a user message and the loop continues instead of returning. The field is nilled
 	// after firing once to prevent infinite loops.
-	PostReplyCheck func(ctx context.Context, reply string) string
+	PostReplyCheck func(ctx context.Context, info PostReplyCheckInfo) string
 	// ProgressPlain suppresses ANSI styling on progress lines (e.g. -plain).
 	ProgressPlain bool
 	// ProgressMode is build|ask|plan; colors the thinking/intent bullet to match the REPL mode.
@@ -99,6 +112,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 	streamedFinal := false
 	consecutiveToolFails := 0
 	const maxConsecutiveToolFails = 3
+	var turnTools []string
 
 	for {
 		msgs = truncateHistory(msgs, sysOffset, r.Cfg.ContextWindowTokens, r.Cfg.ContextReserveTokens, toolsOverhead)
@@ -148,8 +162,17 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				if parsed := parseTextToolCalls(msg.Content); len(parsed) > 0 {
 					msgs = append(msgs, openai.AssistantMessage(msg.Content))
 
+					thinkingPrinted := false
 					if r.Progress != nil {
 						if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, msg.Content); line != "" {
+							fmt.Fprintf(r.Progress, "\n%s\n", line)
+							thinkingPrinted = true
+						}
+					}
+					if r.Progress != nil && !thinkingPrinted && len(parsed) > 0 {
+						tc0 := parsed[0]
+						args0 := textToolCallArgsJSON(tc0.Args)
+						if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, tc0.Name, args0); line != "" {
 							fmt.Fprintf(r.Progress, "\n%s\n", line)
 						}
 					}
@@ -197,6 +220,10 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 					}
 					wg.Wait()
 
+					for _, res := range results {
+						turnTools = append(turnTools, res.name)
+					}
+
 					toolParts := make([]string, 0, len(results))
 					allFailed := true
 					var resultBuf strings.Builder
@@ -236,7 +263,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			}
 
 			if r.Progress != nil {
-				fmt.Fprintf(r.Progress, "  llm %s  ·  reply\n", formatProgressDur(llmDur))
+				fmt.Fprintf(r.Progress, "%sllm %s  ·  reply\n", progressNestedIndent, formatProgressDur(llmDur))
 			}
 			if msg.Content != "" {
 				content := msg.Content
@@ -244,12 +271,18 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 					content = stripTextToolCallFragments(content)
 				}
 				if r.PostReplyCheck != nil {
-					if inject := r.PostReplyCheck(ctx, content); inject != "" {
+					if inject := r.PostReplyCheck(ctx, PostReplyCheckInfo{
+						Reply:     content,
+						User:      user,
+						TurnTools: turnTools,
+					}); inject != "" {
 						r.PostReplyCheck = nil
 						msgs = append(msgs, openai.AssistantMessage(content))
 						msgs = append(msgs, openai.UserMessage(inject))
 						if r.Progress != nil {
-							fmt.Fprintf(r.Progress, "  verifying suggestions…\n")
+							if line := FormatStatusProgressLine(r.ProgressPlain, r.ProgressMode, "verifying suggestions…"); line != "" {
+								fmt.Fprintf(r.Progress, "%s\n", line)
+							}
 						}
 						continue
 					}
@@ -266,12 +299,6 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 
 		msgs = append(msgs, msg.ToParam())
 
-		if r.Progress != nil && strings.TrimSpace(msg.Content) != "" {
-			if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, msg.Content); line != "" {
-				fmt.Fprintf(r.Progress, "\n%s\n", line)
-			}
-		}
-
 		type toolResult struct {
 			id       string
 			name     string
@@ -286,6 +313,22 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			}
 			calls = append(calls, v)
 		}
+
+		thinkingPrinted := false
+		if r.Progress != nil && strings.TrimSpace(msg.Content) != "" {
+			if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, msg.Content); line != "" {
+				fmt.Fprintf(r.Progress, "\n%s\n", line)
+				thinkingPrinted = true
+			}
+		}
+		if r.Progress != nil && !thinkingPrinted && len(calls) > 0 {
+			v0 := calls[0]
+			args0 := json.RawMessage(v0.Function.Arguments)
+			if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, v0.Function.Name, args0); line != "" {
+				fmt.Fprintf(r.Progress, "\n%s\n", line)
+			}
+		}
+
 		results := make([]toolResult, len(calls))
 		if r.Progress != nil {
 			for _, v := range calls {
@@ -334,6 +377,10 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			}(i, v)
 		}
 		wg.Wait()
+
+		for _, v := range calls {
+			turnTools = append(turnTools, v.Function.Name)
+		}
 
 		toolParts := make([]string, 0, len(results))
 		allFailed := true

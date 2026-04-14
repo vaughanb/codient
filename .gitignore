@@ -37,5 +37,6 @@ go.work.sum
 .codient/
 
 # Editor/IDE
-# .idea/
+.idea/
+.cursorj/
 # .vscode/

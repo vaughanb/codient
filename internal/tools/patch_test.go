@@ -236,7 +236,7 @@ func TestPatchFileViaRegistry(t *testing.T) {
 	if err := os.WriteFile(path, []byte("line1\nline2\nline3\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := Default(dir, nil, nil, nil, "")
+	r := Default(dir, nil, nil, nil, "", nil)
 	diff := `@@ -2,1 +2,1 @@
 -line2
 +LINE2

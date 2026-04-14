@@ -8,6 +8,8 @@ import (
 	"github.com/openai/openai-go/v3"
 
 	"codient/internal/assistout"
+	"codient/internal/config"
+	"codient/internal/openaiclient"
 	"codient/internal/prompt"
 	"codient/internal/sessionstore"
 )
@@ -26,22 +28,18 @@ func (s *session) switchMode(newMode prompt.Mode) {
 	note := fmt.Sprintf("[Mode switched from %s to %s. The conversation above is from the previous mode.]", oldMode, newMode)
 	s.history = append(s.history, openai.UserMessage(note))
 
-	oldModel := s.cfg.EffectiveModel(string(oldMode))
-	newModel := s.cfg.EffectiveModel(string(newMode))
-	modelChanging := newModel != "" && newModel != oldModel
-
 	var spinner *modelSpinner
-	if modelChanging && !s.cfg.Plain {
-		spinner = startModelSpinner(os.Stderr, newModel)
+	if s.cfg.Model != "" && !s.cfg.Plain {
+		spinner = startModelSpinner(os.Stderr, s.cfg.Model)
 	}
 
 	s.mode = newMode
-	s.client = s.clientForMode(newMode)
+	s.client = openaiclient.New(s.cfg)
 	s.registry = buildRegistry(s.cfg, newMode, s)
 	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, newMode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 
 	if spinner != nil {
-		spinner.stop(fmt.Sprintf("codient: switched to %s mode (model: %s)", newMode, newModel))
+		spinner.stop(fmt.Sprintf("codient: switched to %s mode (model: %s)", newMode, s.cfg.Model))
 	} else {
 		fmt.Fprintf(os.Stderr, "codient: switched to %s mode\n", newMode)
 	}
@@ -49,6 +47,7 @@ func (s *session) switchMode(newMode prompt.Mode) {
 	if newMode == prompt.ModeBuild {
 		s.warnIfNotGitRepo()
 	}
+	config.SaveLastMode(string(newMode))
 	fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(newMode)))
 }
 

@@ -130,7 +130,7 @@ func TestRunCommandToolViaRegistry(t *testing.T) {
 		Allowlist:      []string{"go"},
 		TimeoutSeconds: 60,
 		MaxOutputBytes: 32 * 1024,
-	}, nil, nil, "")
+	}, nil, nil, "", nil)
 	out, err := r.Run(context.Background(), "run_command", json.RawMessage(`{"argv":["go","env","GOROOT"],"cwd":"."}`))
 	if err != nil {
 		t.Fatal(err)

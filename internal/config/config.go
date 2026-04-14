@@ -31,13 +31,6 @@ const (
 	MaxFetchWebRateBurst  = 50
 )
 
-// ModelProfile holds per-mode LLM connection overrides.
-// Any non-empty field overrides the corresponding top-level Config default.
-type ModelProfile struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-}
 
 // Config holds runtime settings.
 type Config struct {
@@ -45,9 +38,6 @@ type Config struct {
 	APIKey        string
 	Model         string
 	MaxConcurrent int
-	// Models holds optional per-mode overrides keyed by mode name ("plan", "build", "ask").
-	// Fields left empty inherit from the top-level BaseURL/APIKey/Model.
-	Models map[string]*ModelProfile
 	// Workspace is the root directory for coding tools (read_file, list_dir, search_files, write_file).
 	Workspace string
 	// ExecAllowlist is a list of lowercase command names (first argv) permitted for run_command and run_shell.
@@ -76,9 +66,6 @@ type Config struct {
 	FetchMaxBytes int
 	// FetchTimeoutSec caps each fetch_url request (default 30, max 300).
 	FetchTimeoutSec int
-	// SearchBaseURL is the SearXNG base URL for the web_search tool (e.g. "http://localhost:8080").
-	// Empty means web_search is not registered.
-	SearchBaseURL string
 	// SearchMaxResults caps results per web_search query (default 5, max 10).
 	SearchMaxResults int
 	// FetchWebRatePerSec limits combined fetch_url and web_search requests (token bucket). 0 = disabled.
@@ -93,7 +80,7 @@ type Config struct {
 	// Set to "off" to disable.
 	AutoCheckCmd string
 
-	// Mode is the default mode from config (build|ask|plan). Applied in main before CLI flag override.
+	// Mode is the default mode from config (build|ask|plan). In main, last REPL mode overrides when -mode is not set; CLI flag overrides both.
 	Mode string
 	// Plain disables markdown/ANSI output.
 	Plain bool
@@ -115,6 +102,8 @@ type Config struct {
 	ProjectContext string
 	// AstGrep is the resolved ast-grep binary path, empty if unavailable, or "off" to disable.
 	AstGrep string
+	// EmbeddingModel is the model name for /v1/embeddings (e.g. "text-embedding-3-small"). Empty disables semantic search.
+	EmbeddingModel string
 }
 
 // Load reads configuration from the persistent config file.
@@ -233,14 +222,11 @@ func Load() (*Config, error) {
 		designSave = *pc.DesignSave
 	}
 
-	models := loadModelProfiles(pc.Models)
-
 	c := &Config{
 		BaseURL:              baseURL,
 		APIKey:               apiKey,
 		Model:                model,
 		MaxConcurrent:        maxConcurrent,
-		Models:               models,
 		Workspace:            ws,
 		ExecAllowlist:        execAllowlist,
 		ExecTimeoutSeconds:   execTimeout,
@@ -253,7 +239,6 @@ func Load() (*Config, error) {
 		FetchPreapproved:     fetchPreapproved,
 		FetchMaxBytes:        fetchMax,
 		FetchTimeoutSec:      fetchTimeout,
-		SearchBaseURL:        strings.TrimSpace(pc.SearchBaseURL),
 		SearchMaxResults:     searchMaxResults,
 		FetchWebRatePerSec:   fetchWebRate,
 		FetchWebRateBurst:    fetchWebBurst,
@@ -270,6 +255,7 @@ func Load() (*Config, error) {
 		DesignSave:           designSave,
 		ProjectContext:       strings.TrimSpace(pc.ProjectContext),
 		AstGrep:              strings.TrimSpace(pc.AstGrep),
+		EmbeddingModel:       strings.TrimSpace(pc.EmbeddingModel),
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	if c.ExecTimeoutSeconds < 1 {
@@ -323,7 +309,7 @@ func Load() (*Config, error) {
 	return c, nil
 }
 
-// RequireModel returns an error if no default model is configured (top-level model field).
+// RequireModel returns an error if no model is configured.
 func (c *Config) RequireModel() error {
 	if strings.TrimSpace(c.Model) == "" {
 		return fmt.Errorf("no model configured — use /config model <name> to set one (use -list-models to see available ids)")
@@ -331,63 +317,9 @@ func (c *Config) RequireModel() error {
 	return nil
 }
 
-// RequireModelForMode returns an error if the effective model for the given mode
-// (build, ask, or plan) is empty after applying per-mode overrides.
-func (c *Config) RequireModelForMode(mode string) error {
-	if strings.TrimSpace(c.EffectiveModel(mode)) == "" {
-		return fmt.Errorf("no model configured for %s mode — set model or %s_model (see /config)", mode, mode)
-	}
-	return nil
-}
-
-// HasAnyEffectiveModel reports whether at least one of build, ask, or plan has a
-// non-empty effective model (useful before running the first-time setup wizard).
-func (c *Config) HasAnyEffectiveModel() bool {
-	for _, m := range []string{"build", "ask", "plan"} {
-		if strings.TrimSpace(c.EffectiveModel(m)) != "" {
-			return true
-		}
-	}
-	return false
-}
-
 // EffectiveWorkspace returns the resolved workspace directory (defaults to cwd at startup when unset).
 func (c *Config) EffectiveWorkspace() string {
 	return strings.TrimSpace(c.Workspace)
-}
-
-// EffectiveModelConfig resolves the (baseURL, apiKey, model) triple for a given mode.
-// Per-mode overrides take precedence; unset fields fall back to the top-level defaults.
-func (c *Config) EffectiveModelConfig(mode string) (baseURL, apiKey, model string) {
-	baseURL, apiKey, model = c.BaseURL, c.APIKey, c.Model
-	if mp := c.Models[mode]; mp != nil {
-		if mp.BaseURL != "" {
-			baseURL = mp.BaseURL
-		}
-		if mp.APIKey != "" {
-			apiKey = mp.APIKey
-		}
-		if mp.Model != "" {
-			model = mp.Model
-		}
-	}
-	return baseURL, apiKey, model
-}
-
-// EffectiveModel is a convenience that returns only the resolved model name for a mode.
-func (c *Config) EffectiveModel(mode string) string {
-	_, _, model := c.EffectiveModelConfig(mode)
-	return model
-}
-
-// HasModeOverrides returns true if any per-mode model profiles are configured.
-func (c *Config) HasModeOverrides() bool {
-	for _, mp := range c.Models {
-		if mp != nil && (mp.BaseURL != "" || mp.APIKey != "" || mp.Model != "") {
-			return true
-		}
-	}
-	return false
 }
 
 // defaultExecAllowlist is used when exec_allowlist is unset and exec_disable is not set,
@@ -434,30 +366,6 @@ func parseExecAllowlist(s string) []string {
 		}
 		seen[name] = struct{}{}
 		out = append(out, name)
-	}
-	return out
-}
-
-func loadModelProfiles(pm map[string]*PersistentModelProfile) map[string]*ModelProfile {
-	if len(pm) == 0 {
-		return nil
-	}
-	out := make(map[string]*ModelProfile, len(pm))
-	for mode, p := range pm {
-		if p == nil {
-			continue
-		}
-		mp := &ModelProfile{
-			BaseURL: strings.TrimRight(strings.TrimSpace(p.BaseURL), "/"),
-			APIKey:  strings.TrimSpace(p.APIKey),
-			Model:   strings.TrimSpace(p.Model),
-		}
-		if mp.BaseURL != "" || mp.APIKey != "" || mp.Model != "" {
-			out[mode] = mp
-		}
-	}
-	if len(out) == 0 {
-		return nil
 	}
 	return out
 }

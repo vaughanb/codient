@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -17,26 +14,25 @@ const (
 	defaultSearchResults    = 5
 	maxSearchResults        = 10
 	defaultSearchTimeoutSec = 30
-	maxSearchBodyBytes      = 512 * 1024
 )
 
-// SearchOptions configures the optional web_search tool backed by a SearXNG instance.
+// SearchOptions configures the web_search tool.
 type SearchOptions struct {
-	BaseURL     string       // SearXNG base URL (e.g. "http://localhost:8080").
 	MaxResults  int          // Default 5, max 10.
 	TimeoutSec  int          // Per-request timeout (default 30s).
 	RateLimiter *RateLimiter // Optional rate limiter shared with fetch_url.
 }
 
 func registerWebSearch(r *Registry, opts *SearchOptions, fetch *FetchOptions) {
-	if opts == nil || strings.TrimSpace(opts.BaseURL) == "" {
+	if opts == nil {
 		return
 	}
 
 	fetchEnabled := fetch != nil && (len(fetch.AllowHosts) > 0 || fetch.PromptUnknownHost != nil || fetch.IncludePreapproved)
 	desc := "Search the web for documentation, error messages, API references, or library usage. " +
-		"Backed by SearXNG. Returns a numbered list of results with title, URL, and snippet. " +
-		"Prefer this over guessing about unfamiliar libraries or APIs."
+		"Returns a numbered list of results with title, URL, and snippet. " +
+		"Prefer this over guessing about unfamiliar libraries or APIs. " +
+		"Uses embedded metasearch (multiple engines, merged results)."
 	if fetchEnabled {
 		desc += " You may chain with fetch_url (allowlisted hosts only) to read full page text from a result URL."
 	} else {
@@ -54,7 +50,6 @@ func registerWebSearch(r *Registry, opts *SearchOptions, fetch *FetchOptions) {
 	if timeout < time.Second {
 		timeout = defaultSearchTimeoutSec * time.Second
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(opts.BaseURL), "/")
 	limiter := opts.RateLimiter
 
 	r.Register(Tool{
@@ -94,80 +89,9 @@ func registerWebSearch(r *Registry, opts *SearchOptions, fetch *FetchOptions) {
 			if err := limiter.Wait(ctx); err != nil {
 				return "", fmt.Errorf("rate limit: %w", err)
 			}
-			return searxngSearch(ctx, baseURL, q, n, timeout)
+			return searchMuxSearch(ctx, q, n, timeout)
 		},
 	})
-}
-
-// ProbeSearxng reports whether baseURL hosts a SearXNG instance that serves the JSON search API
-// (same contract as web_search). Use this to skip setup when SearXNG is already running.
-func ProbeSearxng(ctx context.Context, baseURL string) bool {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if baseURL == "" {
-		return false
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	_, err := searxngSearch(ctx, baseURL, "codient", 1, 5*time.Second)
-	return err == nil
-}
-
-func searxngSearch(ctx context.Context, baseURL, query string, n int, timeout time.Duration) (string, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return "", fmt.Errorf("query is required")
-	}
-	u, err := url.Parse(baseURL + "/search")
-	if err != nil {
-		return "", fmt.Errorf("invalid searxng base URL: %w", err)
-	}
-	q := u.Query()
-	q.Set("q", query)
-	q.Set("format", "json")
-	q.Set("categories", "general")
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchBodyBytes))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("searxng returned HTTP %d: %s", resp.StatusCode, truncateBytes(body, 256))
-	}
-
-	var data struct {
-		Results []struct {
-			Title   string `json:"title"`
-			URL     string `json:"url"`
-			Content string `json:"content"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return "", fmt.Errorf("searxng: invalid JSON: %w", err)
-	}
-	limit := n
-	if limit > len(data.Results) {
-		limit = len(data.Results)
-	}
-	results := make([]searchResult, limit)
-	for i := 0; i < limit; i++ {
-		r := data.Results[i]
-		results[i] = searchResult{Title: r.Title, URL: r.URL, Snippet: r.Content}
-	}
-	return formatSearchResults(query, results), nil
 }
 
 type searchResult struct {
@@ -192,11 +116,4 @@ func formatSearchResults(query string, results []searchResult) string {
 		}
 	}
 	return b.String()
-}
-
-func truncateBytes(b []byte, max int) string {
-	if len(b) <= max {
-		return string(b)
-	}
-	return string(b[:max]) + "..."
 }

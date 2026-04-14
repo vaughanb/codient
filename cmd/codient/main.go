@@ -43,7 +43,7 @@ func run() int {
 		newSession    = flag.Bool("new-session", false, "start a fresh session instead of resuming the latest")
 		logPath       = flag.String("log", "", "append JSONL agent events to this file")
 		progress      = flag.Bool("progress", false, "print agent progress to stderr")
-		modeFlag      = flag.String("mode", "", "build|ask|plan: tool + prompt policy (default build)")
+		modeFlag      = flag.String("mode", "", "build|ask|plan: tool + prompt policy (default: last REPL mode, else config, else build)")
 		plainOut      = flag.Bool("plain", false, "print assistant replies as raw text (no markdown/ANSI)")
 		streamReply   = flag.Bool("stream-reply", true, "stream assistant tokens to stdout")
 		designSaveDir = flag.String("design-save-dir", "", "directory for saved implementation plans (default: <workspace>/.codient/plans)")
@@ -68,6 +68,8 @@ func run() int {
 	}
 	if explicit["mode"] {
 		cfg.Mode = *modeFlag
+	} else if lm := config.LoadLastMode(); lm != "" {
+		cfg.Mode = lm
 	}
 	if explicit["plain"] {
 		cfg.Plain = *plainOut
@@ -184,9 +186,8 @@ func run() int {
 		execAllow = tools.NewSessionExecAllow(cfg.ExecAllowlist)
 	}
 	s := &session{
-		cfg:              cfg,
-		llmResolver:      openaiclient.NewModeClientResolver(),
-		agentLog:         agentLog,
+		cfg:      cfg,
+		agentLog: agentLog,
 		progressOut:      progressOut,
 		mode:             agentMode,
 		richOutput:       assistantOutputRich(cfg.Plain),
@@ -199,7 +200,7 @@ func run() int {
 		projectContext:   projectCtx,
 		execAllow:        execAllow,
 	}
-	s.client = s.clientForMode(agentMode)
+	s.client = openaiclient.New(cfg)
 	s.registry = buildRegistry(cfg, agentMode, s)
 	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, effectiveAutoCheckCmd(cfg))
 
@@ -218,7 +219,7 @@ func run() int {
 	}
 
 	// Single-turn mode (piped input or explicit -prompt without -repl).
-	if err := cfg.RequireModelForMode(string(agentMode)); err != nil {
+	if err := cfg.RequireModel(); err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 2
 	}

@@ -293,6 +293,9 @@ func sectionPerToolNotes(p Params) string {
 	if _, ok := set["run_shell"]; ok && len(cfg.ExecAllowlist) > 0 {
 		b.WriteString(fmt.Sprintf("- **run_shell**: JSON `{\"command\":\"...\",\"cwd\":\".\"}`. Runs via **cmd /c** (Windows) or **sh -c** (Unix)—use for **mkdir**, pipelines, redirects. The shell (`cmd` or `sh`) must be allowlisted (included in **%s**).\n", strings.Join(cfg.ExecAllowlist, ", ")))
 	}
+	if _, ok := set["semantic_search"]; ok {
+		b.WriteString("- **semantic_search**: Find files by meaning rather than exact text. Use when you need to discover code related to a concept (e.g. 'authentication middleware', 'database migrations', 'error handling'). Prefer this over grep for exploratory discovery in unfamiliar codebases; use grep when you know the exact string or symbol.\n")
+	}
 	if _, ok := set["echo"]; ok {
 		b.WriteString("- **echo** / **get_time**: Utility tools for sanity checks.\n")
 	}

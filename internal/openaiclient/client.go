@@ -11,8 +11,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
-
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
@@ -72,47 +70,6 @@ func NewFromParams(baseURL, apiKey, model string, maxConcurrent int) *Client {
 // New builds an OpenAI API client using top-level Config defaults.
 func New(cfg *config.Config) *Client {
 	return NewFromParams(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.MaxConcurrent)
-}
-
-// ModeClientResolver caches *Client values by resolved (baseURL, apiKey, model) so
-// multiple modes can share one client when their effective config matches, and use
-// different clients when per-mode overrides point at other endpoints.
-type ModeClientResolver struct {
-	mu    sync.Mutex
-	byKey map[string]*Client
-}
-
-// NewModeClientResolver returns an empty resolver. Call Invalidate after mutating
-// connection settings on the shared *config.Config.
-func NewModeClientResolver() *ModeClientResolver {
-	return &ModeClientResolver{byKey: make(map[string]*Client)}
-}
-
-// ClientFor returns the client for the given mode name ("build", "ask", "plan").
-func (r *ModeClientResolver) ClientFor(cfg *config.Config, mode string) *Client {
-	baseURL, apiKey, model := cfg.EffectiveModelConfig(mode)
-	key := baseURL + "|" + apiKey + "|" + model
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.byKey == nil {
-		r.byKey = make(map[string]*Client)
-	}
-	if c, ok := r.byKey[key]; ok {
-		return c
-	}
-	c := NewFromParams(baseURL, apiKey, model, cfg.MaxConcurrent)
-	r.byKey[key] = c
-	return c
-}
-
-// Invalidate drops cached clients (e.g. after /config changes base_url, api_key, model, or max_concurrent).
-func (r *ModeClientResolver) Invalidate() {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.byKey = make(map[string]*Client)
 }
 
 // Model returns the configured model id.
@@ -316,6 +273,38 @@ func modelKeyMatches(key, modelID string) bool {
 		return true
 	}
 	return false
+}
+
+// CreateEmbedding calls /v1/embeddings with the given model and input strings.
+// Inputs are batched in groups of batchSize. Returns one []float64 per input, in order.
+func (c *Client) CreateEmbedding(ctx context.Context, model string, inputs []string) ([][]float64, error) {
+	const batchSize = 64
+	all := make([][]float64, len(inputs))
+	for start := 0; start < len(inputs); start += batchSize {
+		end := start + batchSize
+		if end > len(inputs) {
+			end = len(inputs)
+		}
+		batch := inputs[start:end]
+		if err := c.llmSem.acquire(ctx); err != nil {
+			return nil, err
+		}
+		res, err := c.oa.Embeddings.New(ctx, openai.EmbeddingNewParams{
+			Model: openai.EmbeddingModel(model),
+			Input: openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: batch},
+		})
+		c.llmSem.release()
+		if err != nil {
+			return nil, fmt.Errorf("embedding batch %d-%d: %w", start, end-1, err)
+		}
+		for _, e := range res.Data {
+			idx := start + int(e.Index)
+			if idx < len(all) {
+				all[idx] = e.Embedding
+			}
+		}
+	}
+	return all, nil
 }
 
 // ModelsResponse is a minimal parse of GET /v1/models for CLI listing.

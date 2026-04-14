@@ -18,18 +18,16 @@ import (
 const codientVersion = "0.1.0"
 
 func runA2AServer(ctx context.Context, cfg *config.Config, addr string, agentLog *agentlog.Logger) int {
-	for _, mode := range []string{"build", "ask", "plan"} {
-		if err := cfg.RequireModelForMode(mode); err != nil {
-			fmt.Fprintf(os.Stderr, "config: %v — each mode needs a model (default `model` or %s_model)\n", err, mode)
-			return 2
-		}
+	if err := cfg.RequireModel(); err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return 2
 	}
 
-	resolver := openaiclient.NewModeClientResolver()
+	client := openaiclient.New(cfg)
 	handler := a2aserver.New(a2aserver.Config{
 		Cfg: cfg,
-		LLMForMode: func(m prompt.Mode) agent.ChatClient {
-			return resolver.ClientFor(cfg, string(m))
+		LLMForMode: func(_ prompt.Mode) agent.ChatClient {
+			return client
 		},
 		Log:     agentLog,
 		Version: codientVersion,

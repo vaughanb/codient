@@ -28,7 +28,10 @@ func (r *Runner) callLLMWithRetry(ctx context.Context, params openai.ChatComplet
 				backoff = 8 * time.Second
 			}
 			if r.Progress != nil {
-				fmt.Fprintf(r.Progress, "  retry %d/%d after %s\n", attempt, r.Cfg.MaxLLMRetries, backoff)
+				status := fmt.Sprintf("retry %d/%d after %s", attempt, r.Cfg.MaxLLMRetries, backoff)
+				if line := FormatStatusProgressLine(r.ProgressPlain, r.ProgressMode, status); line != "" {
+					fmt.Fprintf(r.Progress, "%s\n", line)
+				}
 			}
 			select {
 			case <-time.After(backoff):

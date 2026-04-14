@@ -8,17 +8,20 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/shared"
 
 	"codient/internal/agent"
 	"codient/internal/agentlog"
 	"codient/internal/assistout"
 	"codient/internal/astgrep"
+	"codient/internal/codeindex"
 	"codient/internal/config"
 	"codient/internal/designstore"
 	"codient/internal/gitutil"
@@ -31,10 +34,9 @@ import (
 )
 
 type session struct {
-	cfg              *config.Config
-	client           *openaiclient.Client
-	llmResolver      *openaiclient.ModeClientResolver
-	registry         *tools.Registry
+	cfg      *config.Config
+	client   *openaiclient.Client
+	registry *tools.Registry
 	agentLog         *agentlog.Logger
 	progressOut      io.Writer
 	mode             prompt.Mode
@@ -63,6 +65,8 @@ type session struct {
 
 	fetchAllow    *tools.SessionFetchAllow // mutable fetch_url host approvals for this process; nil until first fetch
 	fetchPromptMu sync.Mutex               // serializes fetch allow prompts and post-lock re-checks
+
+	codeIndex *codeindex.Index // semantic search index; nil when embedding_model is not configured
 }
 
 type undoEntry struct {
@@ -71,20 +75,8 @@ type undoEntry struct {
 	historyLen    int      // len(s.history) before this turn started
 }
 
-// clientForMode returns the openaiclient.Client for the given mode, using per-mode
-// model overrides if configured. Clients are cached by (baseURL, apiKey, model).
-func (s *session) clientForMode(mode prompt.Mode) *openaiclient.Client {
-	return s.llmResolver.ClientFor(s.cfg, string(mode))
-}
-
-// invalidateClientCache clears cached LLM clients so the next clientForMode()
-// picks up any config changes to base_url, api_key, model, max_concurrent, or per-mode overrides.
-func (s *session) invalidateClientCache() {
-	s.llmResolver.Invalidate()
-}
-
 func (s *session) newRunner() *agent.Runner {
-	s.client = s.clientForMode(s.mode)
+	s.client = openaiclient.New(s.cfg)
 	r := &agent.Runner{
 		LLM: s.client, Cfg: s.cfg, Tools: s.registry,
 		Log: s.agentLog, Progress: s.progressOut,
@@ -101,12 +93,12 @@ func (s *session) newRunner() *agent.Runner {
 }
 
 func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user string) (reply string, err error) {
-	if err := s.cfg.RequireModelForMode(string(s.mode)); err != nil {
-		return "", fmt.Errorf("%w — use /config model <name> or %s_model", err, s.mode)
+	if err := s.cfg.RequireModel(); err != nil {
+		return "", err
 	}
 	fmt.Fprint(os.Stderr, "\n")
 	if s.mode == prompt.ModeAsk {
-		runner.PostReplyCheck = makePostReplyCheck()
+		runner.PostReplyCheck = makePostReplyCheck(s)
 	}
 	writePlanDraftPreamble(os.Stdout, s.mode, s.lastReply)
 	streamTo := streamWriterForTurn(s.streamReply, assistout.StdoutIsInteractive(), s.mode, s.richOutput, s.lastReply)
@@ -121,41 +113,151 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user st
 	return reply, nil
 }
 
-const postReplyVerificationPrompt = `You just provided suggestions. Before I accept them, try to DISPROVE each one using tool calls:
+// postReplyVerificationPrompt is injected in Ask mode when the assistant reply looks like
+// an actionable multi-item suggestion list. It asks for a quick tool-grounded pass without
+// imposing a rigid output template.
+const postReplyVerificationPrompt = `Your last reply looked like a list of suggestions or concrete changes. Before we treat it as final, do one short verification pass against this workspace using grep, read_file, or list_dir as needed:
 
-1. For each suggestion, search for the underlying CONCERN it addresses — not the specific names your implementation would use. For example, if you suggested "add transient error types", grep for "transient", "retry", "backoff" — not just "TransientError". Use at least two different search terms per suggestion.
-2. Use grep (for content) or read_file. Do not use search_files for content searches — it only matches file paths.
-3. Drop any suggestion where you find the concern is already addressed, even under different names or in a different style than you proposed.
-4. For each surviving suggestion, describe a specific scenario where the current code produces wrong or dangerous behavior. If you cannot construct one, drop the suggestion — "could be more sophisticated" is not a defect.
-5. For each verification, quote the exact tool name, pattern you used, and the result (match count or key output). Do not paraphrase what a tool returned.
+- Drop or revise anything already addressed in the repo (say briefly what you checked).
+- For anything still relevant, note the strongest evidence (tool name + what you searched/read + what you found). Keep it concise.
 
-Reply with EXACTLY this structure and nothing else:
+Answer in normal prose. Do not use a fixed "## Verified Suggestions" section or numbered report template unless you truly need it for clarity.`
 
-## Verified Suggestions
+// postReplyGateSystem asks for a single YES/NO: does the assistant reply warrant
+// the post-reply verification pass (concrete codebase change proposals)?
+const postReplyGateSystem = `You classify whether a follow-up verification step is needed.
 
-### 1. <title>
-- Evidence: <tool name, pattern, result>
-- Failure scenario: <concrete scenario where current code breaks>
+Reply with exactly YES or NO as the first word of your response (then you may add a short phrase if needed).
 
-(repeat for each survivor)
+Answer YES only if the assistant's reply primarily proposes or argues concrete changes to the user's own project or repository (edits, refactors, new files, config changes, what they should implement).
 
-Do NOT add any other sections. Suggestions that were disproved or dropped must not appear anywhere in your response.`
+Answer NO if the reply is mainly: summarizing external pages or search results; listing numbered links or citations; quoting documentation; answering factual questions; describing third-party software; or checklist/status formatting without prescribing repo edits.`
 
-// makePostReplyCheck returns a PostReplyCheck function for Ask/Plan modes.
-// It fires only when the reply appears to contain a list of suggestions
-// (3+ numbered items, bullets, or markdown headers).
-func makePostReplyCheck() func(context.Context, string) string {
-	return func(_ context.Context, reply string) string {
-		if !looksLikeSuggestionList(reply) {
+// makePostReplyCheck returns a PostReplyCheck function for Ask mode.
+// It uses a cheap LLM gate after list-shaped heuristics: only when the model
+// says the reply warrants verification do we inject the verification prompt.
+func makePostReplyCheck(s *session) func(context.Context, agent.PostReplyCheckInfo) string {
+	return func(ctx context.Context, info agent.PostReplyCheckInfo) string {
+		if !looksLikeSuggestionList(info.Reply) {
+			return ""
+		}
+		if skipSuggestionVerifyForResearchTurn(info) {
+			return ""
+		}
+		if s.progressOut != nil {
+			if line := agent.FormatStatusProgressLine(s.cfg.Plain, string(s.mode), "checking whether verification is needed…"); line != "" {
+				fmt.Fprintf(s.progressOut, "%s\n", line)
+			}
+		}
+		want, err := postReplyGateWantsVerification(ctx, s.client, info)
+		if err != nil || !want {
 			return ""
 		}
 		return postReplyVerificationPrompt
 	}
 }
 
-// looksLikeSuggestionList returns true when reply contains 3+ lines that
-// start with a numbered item, bullet, or markdown header — the shape of a
-// suggestion list that benefits from verification.
+func postReplyGateWantsVerification(ctx context.Context, client *openaiclient.Client, info agent.PostReplyCheckInfo) (bool, error) {
+	if client == nil {
+		return false, fmt.Errorf("nil client")
+	}
+	user := buildPostReplyGateUserMessage(info)
+	params := openai.ChatCompletionNewParams{
+		Model:               shared.ChatModel(client.Model()),
+		Messages:            []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(postReplyGateSystem), openai.UserMessage(user)},
+		Temperature:         openai.Float(0),
+		MaxCompletionTokens: openai.Int(24),
+	}
+	res, err := client.ChatCompletion(ctx, params)
+	if err != nil {
+		return false, err
+	}
+	if len(res.Choices) == 0 {
+		return false, nil
+	}
+	content := ""
+	if c := res.Choices[0].Message.Content; c != "" {
+		content = c
+	}
+	return parsePostReplyGateAnswer(content), nil
+}
+
+const postReplyGateMaxReplyChars = 12000
+
+func buildPostReplyGateUserMessage(info agent.PostReplyCheckInfo) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "User message (this turn):\n%s\n\n", strings.TrimSpace(info.User))
+	if len(info.TurnTools) > 0 {
+		fmt.Fprintf(&b, "Tools used this turn: %s\n\n", strings.Join(info.TurnTools, ", "))
+	} else {
+		fmt.Fprintf(&b, "Tools used this turn: (none)\n\n")
+	}
+	reply := strings.TrimSpace(info.Reply)
+	if len(reply) > postReplyGateMaxReplyChars {
+		reply = reply[:postReplyGateMaxReplyChars] + "\n…[truncated]"
+	}
+	fmt.Fprintf(&b, "Assistant reply:\n%s\n", reply)
+	return b.String()
+}
+
+// parsePostReplyGateAnswer returns true when the gate model affirms verification.
+// Only the first word of the first line is considered (strict YES/NO).
+func parsePostReplyGateAnswer(content string) bool {
+	line := strings.TrimSpace(strings.Split(content, "\n")[0])
+	line = strings.Trim(line, "\"'`*_")
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return false
+	}
+	first := strings.ToUpper(strings.TrimRight(fields[0], ".!,:;"))
+	if strings.HasPrefix(first, "YES") {
+		return true
+	}
+	if strings.HasPrefix(first, "NO") {
+		return false
+	}
+	return false
+}
+
+// skipSuggestionVerifyForResearchTurn skips the DISPROVE-suggestions pass when
+// the turn was web research (web_search, no file mutations) and the user did
+// not ask for codebase change suggestions — list-shaped answers are usually
+// citations or summaries, not actionable repo proposals.
+func skipSuggestionVerifyForResearchTurn(info agent.PostReplyCheckInfo) bool {
+	if !slices.Contains(info.TurnTools, "web_search") {
+		return false
+	}
+	for _, n := range info.TurnTools {
+		if agent.ToolIsMutating(n) {
+			return false
+		}
+	}
+	if userIntentSuggestsCodeChanges(info.User) {
+		return false
+	}
+	return true
+}
+
+func userIntentSuggestsCodeChanges(u string) bool {
+	u = strings.ToLower(u)
+	phrases := []string{
+		"suggest", "recommend", "refactor", "codebase", "our repo", "this repo",
+		"our code", "this code", "this project", "should we ", "code review",
+		"review our", "review the code", "improve our", "improve the code",
+		"apply to", "change we ", "in this codebase",
+	}
+	for _, p := range phrases {
+		if strings.Contains(u, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeSuggestionList returns true when reply contains 3+ lines that look
+// like an actionable suggestion list. It avoids false positives from typical
+// web-search formatting: `- [title](url)` link rows and `## Section` headers
+// without numbering.
 func looksLikeSuggestionList(s string) bool {
 	count := 0
 	for _, line := range strings.Split(s, "\n") {
@@ -163,14 +265,69 @@ func looksLikeSuggestionList(s string) bool {
 		if len(trimmed) == 0 {
 			continue
 		}
-		if trimmed[0] == '-' || trimmed[0] == '*' || strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
-			count++
-		} else if len(trimmed) >= 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && (trimmed[1] == '.' || (len(trimmed) >= 3 && trimmed[1] >= '0' && trimmed[1] <= '9' && trimmed[2] == '.')) {
+		if suggestionListLine(trimmed) {
 			count++
 		}
 		if count >= 3 {
 			return true
 		}
+	}
+	return false
+}
+
+func suggestionListLine(trimmed string) bool {
+	if isMarkdownLinkBullet(trimmed) {
+		return false
+	}
+	// Checklist / status bullets (common in web-search summaries) are not "action items".
+	if strings.ContainsAny(trimmed, "✅✔☑✓") {
+		return false
+	}
+	if trimmed[0] == '-' || trimmed[0] == '*' {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
+		return isNumberedMarkdownHeading(trimmed)
+	}
+	if len(trimmed) >= 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && (trimmed[1] == '.' || (len(trimmed) >= 3 && trimmed[1] >= '0' && trimmed[1] <= '9' && trimmed[2] == '.')) {
+		return true
+	}
+	return false
+}
+
+func isMarkdownLinkBullet(line string) bool {
+	if len(line) < 2 {
+		return false
+	}
+	if line[0] != '-' && line[0] != '*' {
+		return false
+	}
+	rest := strings.TrimSpace(line[1:])
+	return strings.HasPrefix(rest, "[")
+}
+
+// isNumberedMarkdownHeading is true for "## 1. Title" / "### 2) Foo" but not
+// "## Background" or "### See also".
+func isNumberedMarkdownHeading(line string) bool {
+	var rest string
+	switch {
+	case strings.HasPrefix(line, "### "):
+		rest = strings.TrimPrefix(line, "### ")
+	case strings.HasPrefix(line, "## "):
+		rest = strings.TrimPrefix(line, "## ")
+	default:
+		return false
+	}
+	rest = strings.TrimSpace(rest)
+	i := 0
+	for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	if i < len(rest) && (rest[i] == '.' || rest[i] == ')') {
+		return true
 	}
 	return false
 }
@@ -310,7 +467,7 @@ func (s *session) runSingleTurn(ctx context.Context, user string) int {
 		Repl:      false,
 		Mode:      string(s.mode),
 		Workspace: s.cfg.EffectiveWorkspace(),
-		Model:     s.cfg.EffectiveModel(string(s.mode)),
+		Model:     s.cfg.Model,
 	})
 	if s.cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", s.cfg.EffectiveWorkspace(), s.mode, strings.Join(s.registry.Names(), ", "))
@@ -336,6 +493,7 @@ func (s *session) runSingleTurn(ctx context.Context, user string) int {
 func (s *session) runSession(ctx context.Context, initialPrompt string, newSession bool) int {
 	ws := s.cfg.EffectiveWorkspace()
 
+	var resumeSummary string
 	// Load or create session.
 	if !newSession && ws != "" {
 		if existing, err := sessionstore.LoadLatest(ws); err == nil && existing != nil {
@@ -349,7 +507,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 					s.registry = buildRegistry(s.cfg, mode, s)
 					s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 				}
-				fmt.Fprintf(os.Stderr, "codient: resumed session %s (%d messages)\n", s.sessionID, len(s.history))
+				resumeSummary = sessionstore.ResumeSummaryLine(s.sessionID, existing.Messages)
 			}
 		}
 	}
@@ -357,14 +515,17 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		s.sessionID = sessionstore.NewID(ws)
 	}
 
+	config.SaveLastMode(string(s.mode))
+
 	s.warnIfNotGitRepo()
 	assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
-		Plain:     s.cfg.Plain,
-		Quiet:     s.cfg.Quiet,
-		Repl:      true,
-		Mode:      string(s.mode),
-		Workspace: ws,
-		Model:     s.cfg.EffectiveModel(string(s.mode)),
+		Plain:         s.cfg.Plain,
+		Quiet:         s.cfg.Quiet,
+		Repl:          true,
+		Mode:          string(s.mode),
+		Workspace:     ws,
+		Model:         s.cfg.Model,
+		ResumeSummary: resumeSummary,
 	})
 	if s.cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", ws, s.mode, strings.Join(s.registry.Names(), ", "))
@@ -379,15 +540,15 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	s.registry = buildRegistry(s.cfg, s.mode, s)
 	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 
-	if !s.cfg.HasAnyEffectiveModel() {
+	if strings.TrimSpace(s.cfg.Model) == "" {
 		s.runSetupWizard(ctx, sc)
-		s.invalidateClientCache()
-		s.client = s.clientForMode(s.mode)
+		s.client = openaiclient.New(s.cfg)
 		s.registry = buildRegistry(s.cfg, s.mode, s)
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 	}
 
 	s.probeAndSetContext(ctx)
+	s.startCodeIndex(ctx)
 
 	fmt.Fprintf(os.Stderr, "codient: type /help for commands, /exit to quit\n")
 
@@ -501,12 +662,7 @@ func (s *session) printPrompt() {
 // is finalized. If accepted, it switches modes and injects the design as the
 // first build turn. Returns the updated runner.
 func (s *session) offerPlanHandoff(ctx context.Context, sc *bufio.Scanner, runner *agent.Runner, designText string) *agent.Runner {
-	buildModel := s.cfg.EffectiveModel("build")
-	if buildModel != "" && buildModel != s.cfg.EffectiveModel(string(s.mode)) {
-		fmt.Fprintf(os.Stderr, "\ncodient: plan complete — build with %s? [Y/n] ", buildModel)
-	} else {
-		fmt.Fprintf(os.Stderr, "\ncodient: plan complete — would you like to build it? [Y/n] ")
-	}
+	fmt.Fprintf(os.Stderr, "\ncodient: plan complete — would you like to build it? [Y/n] ")
 	if !sc.Scan() {
 		return runner
 	}
@@ -547,12 +703,13 @@ func (s *session) autoSave() {
 		ID:        s.sessionID,
 		Workspace: ws,
 		Mode:      string(s.mode),
-		Model:     s.cfg.EffectiveModel(string(s.mode)),
+		Model:     s.cfg.Model,
 		Messages:  sessionstore.FromOpenAI(s.history),
 	}
 	if err := sessionstore.Save(state); err != nil {
 		fmt.Fprintf(os.Stderr, "codient: session save: %v\n", err)
 	}
+	config.SaveLastMode(string(s.mode))
 }
 
 func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *slashcmd.Registry {
@@ -594,11 +751,10 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 	})
 	cmds.Register(slashcmd.Command{
 		Name:        "setup",
-		Description: "guided setup wizard for API connection, model selection, and web search",
+		Description: "guided setup wizard for API connection, chat model, and optional embedding model for semantic search",
 		Run: func(string) error {
 			s.runSetupWizard(ctx, sc)
-			s.invalidateClientCache()
-			s.client = s.clientForMode(s.mode)
+			s.client = openaiclient.New(s.cfg)
 			s.registry = buildRegistry(s.cfg, s.mode, s)
 			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 			s.cfg.ContextWindowTokens = 0
@@ -654,15 +810,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run: func(string) error {
 			fmt.Fprintf(os.Stderr, "  session:   %s\n", s.sessionID)
 			fmt.Fprintf(os.Stderr, "  mode:      %s\n", s.mode)
-			fmt.Fprintf(os.Stderr, "  model:     %s\n", s.cfg.EffectiveModel(string(s.mode)))
-			if s.cfg.HasModeOverrides() {
-				for _, m := range []string{"plan", "build", "ask"} {
-					em := s.cfg.EffectiveModel(m)
-					if em != s.cfg.Model {
-						fmt.Fprintf(os.Stderr, "  %s model: %s\n", m, em)
-					}
-				}
-			}
+			fmt.Fprintf(os.Stderr, "  model:     %s\n", s.cfg.Model)
 			fmt.Fprintf(os.Stderr, "  workspace: %s\n", s.cfg.EffectiveWorkspace())
 			fmt.Fprintf(os.Stderr, "  turns:     %d\n", s.turn)
 			usage := s.estimateFullContextUsage()
@@ -709,12 +857,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run: func(args string) error {
 			name := strings.TrimSpace(args)
 			if name == "" {
-				em := s.cfg.EffectiveModel(string(s.mode))
-				if em != s.cfg.Model && s.cfg.Model != "" {
-					fmt.Fprintf(os.Stderr, "current model (%s mode): %s  (default: %s)\n", s.mode, em, s.cfg.Model)
-				} else {
-					fmt.Fprintf(os.Stderr, "current model: %s\n", em)
-				}
+				fmt.Fprintf(os.Stderr, "current model: %s\n", s.cfg.Model)
 				return nil
 			}
 			return s.handleConfig(ctx, "model "+name)
@@ -814,26 +957,21 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 
 	switch key {
 	case "model", "base_url", "api_key", "max_concurrent":
-		s.invalidateClientCache()
-		s.client = s.clientForMode(s.mode)
+		s.client = openaiclient.New(s.cfg)
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 		if key == "model" || key == "base_url" {
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
 		}
-	case "plan_model", "build_model", "ask_model",
-		"plan_base_url", "build_base_url", "ask_base_url",
-		"plan_api_key", "build_api_key", "ask_api_key":
-		s.invalidateClientCache()
-		s.client = s.clientForMode(s.mode)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 	case "fetch_allow_hosts", "fetch_preapproved", "fetch_max_bytes", "fetch_timeout_sec",
 		"fetch_web_rate_per_sec", "fetch_web_rate_burst",
-		"search_url", "search_max_results":
+		"search_max_results":
 		s.registry = buildRegistry(s.cfg, s.mode, s)
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 	case "autocheck_cmd":
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+	case "embedding_model":
+		s.startCodeIndex(ctx)
 	}
 	return nil
 }
@@ -848,28 +986,6 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  base_url:              %s\n", s.cfg.BaseURL)
 	fmt.Fprintf(w, "  api_key:               %s\n", masked)
 	fmt.Fprintf(w, "  model:                 %s\n", s.cfg.Model)
-	if s.cfg.HasModeOverrides() {
-		fmt.Fprintf(w, "\n  -- Per-mode models --\n")
-		for _, m := range []string{"plan", "build", "ask"} {
-			mp := s.cfg.Models[m]
-			if mp == nil {
-				continue
-			}
-			if mp.Model != "" {
-				fmt.Fprintf(w, "  %s_model:            %s\n", m, mp.Model)
-			}
-			if mp.BaseURL != "" {
-				fmt.Fprintf(w, "  %s_base_url:         %s\n", m, mp.BaseURL)
-			}
-			if mp.APIKey != "" {
-				masked := mp.APIKey
-				if len(masked) > 4 {
-					masked = masked[:4] + strings.Repeat("*", len(masked)-4)
-				}
-				fmt.Fprintf(w, "  %s_api_key:          %s\n", m, masked)
-			}
-		}
-	}
 	fmt.Fprintf(w, "\n  -- Defaults --\n")
 	fmt.Fprintf(w, "  mode:                  %s\n", s.cfg.Mode)
 	fmt.Fprintf(w, "  workspace:             %s\n", s.cfg.Workspace)
@@ -893,7 +1009,6 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  fetch_web_rate_per_sec: %d\n", s.cfg.FetchWebRatePerSec)
 	fmt.Fprintf(w, "  fetch_web_rate_burst:   %d\n", s.cfg.FetchWebRateBurst)
 	fmt.Fprintf(w, "\n  -- Search --\n")
-	fmt.Fprintf(w, "  search_url:            %s\n", s.cfg.SearchBaseURL)
 	fmt.Fprintf(w, "  search_max_results:    %d\n", s.cfg.SearchMaxResults)
 	fmt.Fprintf(w, "\n  -- Auto --\n")
 	fmt.Fprintf(w, "  autocompact_threshold: %d\n", s.cfg.AutoCompactPct)
@@ -916,6 +1031,11 @@ func (s *session) printAllConfig() {
 		astGrepDisplay = "(not installed)"
 	}
 	fmt.Fprintf(w, "  ast_grep:              %s\n", astGrepDisplay)
+	embModel := s.cfg.EmbeddingModel
+	if embModel == "" {
+		embModel = "(not configured)"
+	}
+	fmt.Fprintf(w, "  embedding_model:       %s\n", embModel)
 	fmt.Fprintf(w, "\nSet a value: /config <key> <value>\n")
 }
 
@@ -972,8 +1092,6 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return strconv.Itoa(s.cfg.FetchWebRatePerSec), true
 	case "fetch_web_rate_burst":
 		return strconv.Itoa(s.cfg.FetchWebRateBurst), true
-	case "search_url":
-		return s.cfg.SearchBaseURL, true
 	case "search_max_results":
 		return strconv.Itoa(s.cfg.SearchMaxResults), true
 	case "autocompact_threshold":
@@ -1000,20 +1118,8 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return s.cfg.ProjectContext, true
 	case "ast_grep":
 		return s.cfg.AstGrep, true
-	case "plan_model", "build_model", "ask_model":
-		mode := strings.TrimSuffix(key, "_model")
-		return s.cfg.EffectiveModel(mode), true
-	case "plan_base_url", "build_base_url", "ask_base_url":
-		mode := strings.TrimSuffix(key, "_base_url")
-		base, _, _ := s.cfg.EffectiveModelConfig(mode)
-		return base, true
-	case "plan_api_key", "build_api_key", "ask_api_key":
-		mode := strings.TrimSuffix(key, "_api_key")
-		_, apiKey, _ := s.cfg.EffectiveModelConfig(mode)
-		if len(apiKey) > 4 {
-			apiKey = apiKey[:4] + strings.Repeat("*", len(apiKey)-4)
-		}
-		return apiKey, true
+	case "embedding_model":
+		return s.cfg.EmbeddingModel, true
 	default:
 		return "", false
 	}
@@ -1125,8 +1231,6 @@ func (s *session) setConfig(key, value string) error {
 			n = config.MaxFetchWebRateBurst
 		}
 		s.cfg.FetchWebRateBurst = n
-	case "search_url":
-		s.cfg.SearchBaseURL = strings.TrimRight(value, "/")
 	case "search_max_results":
 		n, err := parseInt(value)
 		if err != nil || n < 1 {
@@ -1187,52 +1291,12 @@ func (s *session) setConfig(key, value string) error {
 		s.cfg.AstGrep = value
 		s.registry = buildRegistry(s.cfg, s.mode, s)
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
-	case "plan_model", "build_model", "ask_model":
-		mode := strings.TrimSuffix(key, "_model")
-		s.ensureModelProfile(mode).Model = value
-		s.cleanModelProfile(mode)
-		s.invalidateClientCache()
-	case "plan_base_url", "build_base_url", "ask_base_url":
-		mode := strings.TrimSuffix(key, "_base_url")
-		s.ensureModelProfile(mode).BaseURL = strings.TrimRight(value, "/")
-		s.cleanModelProfile(mode)
-		s.invalidateClientCache()
-	case "plan_api_key", "build_api_key", "ask_api_key":
-		mode := strings.TrimSuffix(key, "_api_key")
-		s.ensureModelProfile(mode).APIKey = value
-		s.cleanModelProfile(mode)
-		s.invalidateClientCache()
+	case "embedding_model":
+		s.cfg.EmbeddingModel = value
 	default:
 		return fmt.Errorf("unknown config key %q", key)
 	}
 	return nil
-}
-
-// ensureModelProfile returns the ModelProfile for the given mode, creating it if needed.
-func (s *session) ensureModelProfile(mode string) *config.ModelProfile {
-	if s.cfg.Models == nil {
-		s.cfg.Models = make(map[string]*config.ModelProfile)
-	}
-	mp := s.cfg.Models[mode]
-	if mp == nil {
-		mp = &config.ModelProfile{}
-		s.cfg.Models[mode] = mp
-	}
-	return mp
-}
-
-// cleanModelProfile removes the profile entry if all fields are empty.
-func (s *session) cleanModelProfile(mode string) {
-	mp := s.cfg.Models[mode]
-	if mp == nil {
-		return
-	}
-	if mp.BaseURL == "" && mp.APIKey == "" && mp.Model == "" {
-		delete(s.cfg.Models, mode)
-	}
-	if len(s.cfg.Models) == 0 {
-		s.cfg.Models = nil
-	}
 }
 
 // resolveAstGrep resolves the ast-grep binary path into cfg.AstGrep.
@@ -1298,11 +1362,11 @@ func (s *session) probeAndSetContext(ctx context.Context) {
 	if s.cfg.ContextWindowTokens > 0 {
 		return
 	}
-	model := strings.TrimSpace(s.cfg.EffectiveModel(string(s.mode)))
+	model := strings.TrimSpace(s.cfg.Model)
 	if model == "" {
 		return
 	}
-	c := s.clientForMode(s.mode)
+	c := openaiclient.New(s.cfg)
 	n, err := c.ProbeContextWindow(ctx, model)
 	if err != nil || n <= 0 {
 		return
@@ -1329,6 +1393,29 @@ func computeUndoEntry(preModified, preUntracked, postModified, postUntracked []s
 		createdFiles:  created,
 		historyLen:    histLen,
 	}
+}
+
+// startCodeIndex launches background indexing if an embedding model is configured.
+// After the index is built, the registry and system prompt are rebuilt to include semantic_search.
+func (s *session) startCodeIndex(ctx context.Context) {
+	model := strings.TrimSpace(s.cfg.EmbeddingModel)
+	ws := s.cfg.EffectiveWorkspace()
+	if model == "" || ws == "" {
+		return
+	}
+	s.codeIndex = codeindex.New(ws, s.client, model)
+	s.registry = buildRegistry(s.cfg, s.mode, s)
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+	fmt.Fprintf(os.Stderr, "codient: indexing workspace for semantic search...\n")
+	go func() {
+		s.codeIndex.BuildOrUpdate(ctx)
+		n := s.codeIndex.Len()
+		if err := s.codeIndex.BuildErr(); err != nil {
+			fmt.Fprintf(os.Stderr, "codient: semantic index: %v\n", err)
+		} else if n > 0 {
+			fmt.Fprintf(os.Stderr, "codient: semantic index ready (%d files)\n", n)
+		}
+	}()
 }
 
 func setDiff(a, b []string) []string {

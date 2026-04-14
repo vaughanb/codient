@@ -4,7 +4,7 @@ BIN_DIR := bin
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := $(BIN_DIR)/codient$(EXE)
 
-.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check run searxng-up searxng-down searxng-status
+.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check run
 
 all: build
 
@@ -25,11 +25,6 @@ help:
 	@echo "  make mod-tidy       go mod tidy"
 	@echo "  make check          vet + test-unit (no live integration; safe for CI)"
 	@echo "  make clean          remove $(BIN_DIR)/"
-	@echo ""
-	@echo "SearXNG (web search):"
-	@echo "  make searxng-up     start SearXNG in Docker (port SEARXNG_PORT, default 8888)"
-	@echo "  make searxng-down   stop and remove the SearXNG container"
-	@echo "  make searxng-status show SearXNG container status"
 
 build:
 	$(GO) build -o $(BIN) ./cmd/codient
@@ -78,17 +73,3 @@ check: vet test-unit
 
 run:
 	$(GO) run ./cmd/codient -- $(ARGS)
-
-# --- SearXNG (web search backend) ---
-SEARXNG_PORT    ?= 8888
-SEARXNG_COMPOSE := docker/searxng/docker-compose.yml
-
-searxng-up: export SEARXNG_PORT := $(SEARXNG_PORT)
-searxng-up:
-	docker compose -f $(SEARXNG_COMPOSE) up -d
-
-searxng-down:
-	docker compose -f $(SEARXNG_COMPOSE) down
-
-searxng-status:
-	@docker ps --filter name=codient-searxng --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"

@@ -53,8 +53,7 @@ type PersistentConfig struct {
 	FetchWebRateBurst  int `json:"fetch_web_rate_burst,omitempty"`
 
 	// Search
-	SearchBaseURL    string `json:"search_url,omitempty"`
-	SearchMaxResults int    `json:"search_max_results,omitempty"`
+	SearchMaxResults int `json:"search_max_results,omitempty"`
 
 	// Auto
 	AutoCompactPct int    `json:"autocompact_threshold,omitempty"`
@@ -82,15 +81,8 @@ type PersistentConfig struct {
 	// ast-grep: "auto" (default), "off", or explicit path to binary
 	AstGrep string `json:"ast_grep,omitempty"`
 
-	// Per-mode model overrides (keyed by "plan", "build", "ask").
-	Models map[string]*PersistentModelProfile `json:"models,omitempty"`
-}
-
-// PersistentModelProfile holds per-mode LLM connection overrides in config.json.
-type PersistentModelProfile struct {
-	BaseURL string `json:"base_url,omitempty"`
-	APIKey  string `json:"api_key,omitempty"`
-	Model   string `json:"model,omitempty"`
+	// Embedding model for semantic code search (e.g. "text-embedding-3-small"). Empty disables.
+	EmbeddingModel string `json:"embedding_model,omitempty"`
 }
 
 func stateDir() (string, error) {
@@ -198,7 +190,6 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		FetchTimeoutSec:    cfg.FetchTimeoutSec,
 		FetchWebRatePerSec: cfg.FetchWebRatePerSec,
 		FetchWebRateBurst:  cfg.FetchWebRateBurst,
-		SearchBaseURL:      cfg.SearchBaseURL,
 		SearchMaxResults:   cfg.SearchMaxResults,
 		AutoCompactPct:     cfg.AutoCompactPct,
 		AutoCheckCmd:       cfg.AutoCheckCmd,
@@ -210,25 +201,7 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		DesignSaveDir:      cfg.DesignSaveDir,
 		ProjectContext:     cfg.ProjectContext,
 		AstGrep:            cfg.AstGrep,
-	}
-	if len(cfg.Models) > 0 {
-		pc.Models = make(map[string]*PersistentModelProfile, len(cfg.Models))
-		for mode, mp := range cfg.Models {
-			if mp == nil {
-				continue
-			}
-			pmp := &PersistentModelProfile{
-				BaseURL: mp.BaseURL,
-				APIKey:  mp.APIKey,
-				Model:   mp.Model,
-			}
-			if pmp.BaseURL != "" || pmp.APIKey != "" || pmp.Model != "" {
-				pc.Models[mode] = pmp
-			}
-		}
-		if len(pc.Models) == 0 {
-			pc.Models = nil
-		}
+		EmbeddingModel:     cfg.EmbeddingModel,
 	}
 	if !cfg.FetchPreapproved {
 		f := false

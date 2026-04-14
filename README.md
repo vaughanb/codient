@@ -11,7 +11,6 @@
 
 **Optional:**
 
-- [Docker](https://www.docker.com/products/docker-desktop) — for automated SearXNG setup (web search). See [Web search (SearXNG)](#web-search-searxng).
 - [ast-grep](https://ast-grep.github.io/) — for the `find_references` structural code search tool. Codient auto-detects or offers to download it on first interactive session.
 
 ## Install
@@ -45,7 +44,7 @@ codient
 /config api_key your-key-here
 ```
 
-Or run `/setup` for a guided wizard (connection, model, optional SearXNG).
+Or run `/setup` for a guided wizard (connection and model selection).
 
 ### Config file reference (`~/.codient/config.json`)
 
@@ -121,8 +120,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `fetch_web_rate_per_sec` | Token-bucket rate limit for `fetch_url` and `web_search` combined (`0` = off, max 100) | `0` |
 | `fetch_web_rate_burst` | Burst size for that limiter (`0` with a positive rate defaults to the rate; max 50) | `0` |
 | **Search** | | |
-| `search_url` | SearXNG base URL (e.g. `http://localhost:8888`). Enables `web_search`. | *(empty)* |
-| `search_max_results` | Results per query (max 10) | `5` |
+| `search_max_results` | Results per `web_search` query (max 10) | `5` |
 | **Auto** | | |
 | `autocompact_threshold` | Context usage % that triggers compaction (0 disables) | `75` |
 | `autocheck_cmd` | Shell command after file edits (empty = auto-detect, `off` = disable) | *(auto)* |
@@ -140,6 +138,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `project_context` | `off` to skip auto-injected project hints | *(empty)* |
 | **Tools** | | |
 | `ast_grep` | ast-grep binary path: `auto` (default), explicit path, or `off` to disable | *(auto)* |
+| `embedding_model` | Model id for `/v1/embeddings` (same base URL as chat). Enables the `semantic_search` tool; leave empty to disable | *(empty)* |
 
 When `fetch_url` receives `Content-Type: text/html`, the body is converted to simplified markdown (headings, links, lists, code) before being returned.
 
@@ -153,38 +152,18 @@ Test infrastructure variables (`CODIENT_INTEGRATION*`) are used by the test suit
 
 For defaults and validation details, see [`internal/config/config.go`](internal/config/config.go).
 
-### Web search (SearXNG)
+### Web search
 
-The `web_search` tool requires a [SearXNG](https://docs.searxng.org/) instance running in Docker.
+The `web_search` tool is always enabled. It uses an embedded metasearch engine ([searchmux](https://github.com/vaughanb/searchmux)) that fans out queries to multiple backends (Google, DuckDuckGo, StackOverflow, GitHub, pkg.go.dev, npm, PyPI, Hacker News, Wikipedia) in parallel, merges and deduplicates results, and returns a ranked list. No external server or Docker container is required.
 
-**Easiest path** — run `/setup` inside a codient session and pick option 1 (auto-install). This pulls and starts the SearXNG container automatically if Docker is installed.
+### Semantic code search
 
-**Manual start:**
+When **`embedding_model`** is set in config, codient indexes text files in the workspace and registers the **`semantic_search`** tool (all modes). The agent can find files by meaning (e.g. “authentication”, “migrations”) instead of relying only on exact-string `grep`.
 
-```bash
-make searxng-up                # default port 8888
-make searxng-up SEARXNG_PORT=9090  # custom port
-```
-
-Or use Docker Compose directly:
-
-```bash
-SEARXNG_PORT=8888 docker compose -f docker/searxng/docker-compose.yml up -d
-```
-
-**Stop:**
-
-```bash
-make searxng-down
-```
-
-**Check status:**
-
-```bash
-make searxng-status
-```
-
-The default port is **8888** (not 8080, which is reserved for the A2A server). Override with `SEARXNG_PORT`.
+- **API:** Embeddings use the same **`base_url`** and **`api_key`** as chat completions (`POST /v1/embeddings`). Your server must expose that endpoint for the chosen model (e.g. OpenAI `text-embedding-3-small`, or a local embedding model in LM Studio / Ollama).
+- **When indexing runs:** After you start an interactive session, indexing begins automatically in the background—no separate command. stderr shows progress and completion (or an error if embeddings fail).
+- **Persistence:** The index is stored under **`<workspace>/.codient/index/embeddings.gob`**. On later sessions, unchanged files reuse cached vectors; only new or modified files are re-embedded. If you change **`embedding_model`**, the stored index is invalidated and rebuilt.
+- **Configure:** `/config embedding_model <model-id>`, set `embedding_model` in `~/.codient/config.json`, or use **`/setup`** (optional prompt after chat model selection).
 
 ## Usage
 
@@ -250,7 +229,7 @@ Inside a session you can use slash commands to control the agent:
 | `/plan` (or `/p`; also `/design`, `/d`) | Switch to plan mode (read-only, structured implementation design) |
 | `/ask` (or `/a`) | Switch to ask mode (read-only Q&A) |
 | `/config [key] [value]` | View or set any configuration key (no args = show all, key = show one, key value = set and save) |
-| `/setup` | Guided setup wizard for API connection, model selection, and optional web search |
+| `/setup` | Guided setup wizard for API connection, chat model selection, and optional embedding model for semantic search |
 | `/compact` | Summarize conversation history to save context space |
 | `/model <name>` | Switch to a different model (shortcut for `/config model`) |
 | `/workspace <path>` | Change the workspace directory |
@@ -266,6 +245,8 @@ Inside a session you can use slash commands to control the agent:
 ### Session persistence
 
 Session state (conversation history, mode, model) is saved under `<workspace>/.codient/sessions/` after each turn. Starting codient again in the same workspace resumes the latest session. Use `-new-session` to start fresh.
+
+The semantic search index (when **`embedding_model`** is set) lives under `<workspace>/.codient/index/` and is separate from chat sessions.
 
 ### Plan mode and saved plans
 

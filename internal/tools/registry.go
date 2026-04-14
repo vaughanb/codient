@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"codient/internal/codeindex"
+
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/shared"
 )
@@ -93,40 +95,43 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 // coding tools scoped to that directory (set CODIENT_WORKSPACE).
 // exec enables run_command when non-nil and Allowlist is non-empty (CODIENT_EXEC_ALLOWLIST).
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty (CODIENT_FETCH_ALLOW_HOSTS).
-// search enables web_search when non-nil and configured (CODIENT_SEARCH_URL or persisted search_url).
-func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string) *Registry {
+// search enables web_search when non-nil (always enabled in default builds).
+func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
 		registerWorkspaceTools(r, root, exec, fetch, search, astGrepPath)
 	}
+	registerSemanticSearch(r, idx)
 	return r
 }
 
 // DefaultReadOnly is like Default but omits write_file and run_command: read/search/list/grep
 // only (plus echo and get_time). Use for Ask mode.
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty.
-// search enables web_search when non-nil and configured.
-func DefaultReadOnly(workspace string, fetch *FetchOptions, search *SearchOptions, astGrepPath string) *Registry {
+// search enables web_search when non-nil.
+func DefaultReadOnly(workspace string, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
 		registerWorkspaceReadTools(r, root, fetch, search, astGrepPath)
 	}
+	registerSemanticSearch(r, idx)
 	return r
 }
 
 // DefaultReadOnlyPlan is like DefaultReadOnly but omits echo so the model cannot substitute
 // a one-line echo for a written design. Use for Plan mode.
-func DefaultReadOnlyPlan(workspace string, fetch *FetchOptions, search *SearchOptions, astGrepPath string) *Registry {
+func DefaultReadOnlyPlan(workspace string, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, false)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
 		registerWorkspaceReadTools(r, root, fetch, search, astGrepPath)
 	}
+	registerSemanticSearch(r, idx)
 	return r
 }
 

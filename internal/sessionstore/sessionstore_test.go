@@ -171,3 +171,45 @@ func TestDir(t *testing.T) {
 		t.Fatalf("got %q want %q", d, want)
 	}
 }
+
+func TestResumeSummaryLine(t *testing.T) {
+	if g := ResumeSummaryLine("sess_1", nil); g != "" {
+		t.Fatalf("empty msgs: got %q", g)
+	}
+	msgs := FromOpenAI([]openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage("hello world"),
+		openai.AssistantMessage("hi"),
+	})
+	s := ResumeSummaryLine("myproj_20260101_120000", msgs)
+	if !strings.Contains(s, "session myproj_20260101_120000") || !strings.Contains(s, "1 turn") || !strings.Contains(s, "last: hello world") {
+		t.Fatalf("got %q", s)
+	}
+
+	msgs2 := FromOpenAI([]openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage("line one\nline two"),
+	})
+	s2 := ResumeSummaryLine("", msgs2)
+	if !strings.Contains(s2, "line one") || strings.Contains(s2, "line two") {
+		t.Fatalf("want first line only: %q", s2)
+	}
+
+	msgs3 := FromOpenAI([]openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage("first"),
+		openai.AssistantMessage("ok"),
+		openai.UserMessage("second ask"),
+	})
+	s3 := ResumeSummaryLine("id", msgs3)
+	if !strings.Contains(s3, "2 turns") || !strings.Contains(s3, "second ask") || strings.Contains(s3, "first") {
+		t.Fatalf("want last user: %q", s3)
+	}
+
+	msgs4 := FromOpenAI([]openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage("normal user request"),
+		openai.AssistantMessage("ok"),
+		openai.UserMessage("You just provided suggestions. Before I accept them, try to DISPROVE each one using tool calls:"),
+	})
+	s4 := ResumeSummaryLine("id", msgs4)
+	if !strings.Contains(s4, "normal user request") || strings.Contains(s4, "You just provided suggestions") {
+		t.Fatalf("should skip internal verification prompt in preview: %q", s4)
+	}
+}

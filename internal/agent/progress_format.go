@@ -218,7 +218,7 @@ func progressToolActionPhrase(toolName string, argsJSON []byte, sum map[string]a
 // progressNestedIndent spaces lines nested under the mode-colored thinking line.
 const progressNestedIndent = "    "
 
-// progressToolPreludeMark distinguishes per-tool lines from the thinking-line bullet (●).
+// progressToolPreludeMark prefixes tool-intent lines (no mode-colored bullet — those are for thinking only).
 const progressToolPreludeMark = "▸"
 
 // FormatThinkingProgressLine is a full stderr line for assistant reasoning that accompanies tool calls.
@@ -230,9 +230,87 @@ func FormatThinkingProgressLine(plain bool, mode string, content string) string 
 	return assistout.ProgressIntentBulletPrefix(plain, mode) + line
 }
 
+// FormatSyntheticIntentThinkingLine builds a first-person intent line when the model issues
+// tool calls without accompanying prose (or only tool markup). Empty if no sensible sentence.
+func FormatSyntheticIntentThinkingLine(plain bool, mode string, toolName string, argsJSON []byte) string {
+	s := syntheticIntentSentence(toolName, argsJSON)
+	if s == "" {
+		return ""
+	}
+	return FormatThinkingProgressLine(plain, mode, s)
+}
+
+func syntheticIntentSentence(toolName string, argsJSON []byte) string {
+	sum := agentlog.SummarizeArgs(toolName, argsJSON)
+	switch toolName {
+	case "web_search":
+		if q, ok := sum["query"].(string); ok && strings.TrimSpace(q) != "" {
+			return fmt.Sprintf(`I'll search the web for %q.`, truncateRunes(strings.TrimSpace(q), 72))
+		}
+		return "I'll run a web search."
+	case "fetch_url":
+		if u, ok := sum["url"].(string); ok && strings.TrimSpace(u) != "" {
+			return fmt.Sprintf("I'll fetch %s.", truncateRunes(strings.TrimSpace(u), 72))
+		}
+		return "I'll fetch a URL."
+	case "read_file":
+		if p, ok := sum["path"].(string); ok && strings.TrimSpace(p) != "" {
+			return fmt.Sprintf("I'll read %s.", strings.TrimSpace(p))
+		}
+		return "I'll read a file."
+	case "write_file", "str_replace", "patch_file", "insert_lines":
+		if p, ok := sum["path"].(string); ok && strings.TrimSpace(p) != "" {
+			return fmt.Sprintf("I'll update %s.", strings.TrimSpace(p))
+		}
+		return "I'll edit a file."
+	case "grep":
+		if p, ok := sum["pattern"].(string); ok && strings.TrimSpace(p) != "" {
+			return fmt.Sprintf(`I'll search the codebase for %q.`, truncateRunes(strings.TrimSpace(p), 48))
+		}
+		return "I'll search the codebase."
+	case "list_dir":
+		if p, ok := sum["path"].(string); ok && strings.TrimSpace(p) != "" && strings.TrimSpace(p) != "." {
+			return fmt.Sprintf("I'll list %s.", strings.TrimSpace(p))
+		}
+		return "I'll list the workspace."
+	case "glob_files":
+		if pat, ok := sum["pattern"].(string); ok && strings.TrimSpace(pat) != "" {
+			return fmt.Sprintf("I'll glob for %s.", truncateRunes(strings.TrimSpace(pat), 48))
+		}
+		return "I'll run a file glob."
+	case "search_files":
+		return "I'll search for matching file paths."
+	case "run_command":
+		if argv, ok := sum["argv"].([]string); ok && len(argv) > 0 {
+			return fmt.Sprintf("I'll run %s.", truncateRunes(strings.Join(argv, " "), 56))
+		}
+		return "I'll run a command."
+	case "run_shell":
+		if cmd, ok := sum["command_prefix"].(string); ok && strings.TrimSpace(cmd) != "" {
+			return fmt.Sprintf("I'll run a shell command (%s).", truncateRunes(strings.TrimSpace(cmd), 48))
+		}
+		return "I'll run a shell command."
+	case "get_time":
+		return "I'll read the current time."
+	default:
+		h := strings.ReplaceAll(toolName, "_", " ")
+		return fmt.Sprintf("I'll use %s.", h)
+	}
+}
+
+// FormatStatusProgressLine is a mode-colored progress line for non-tool status
+// updates (for example "verifying suggestions..." or retry notices).
+func FormatStatusProgressLine(plain bool, mode string, status string) string {
+	s := strings.TrimSpace(status)
+	if s == "" {
+		return ""
+	}
+	return assistout.ProgressIntentBulletPrefix(plain, mode) + s
+}
+
 // FormatToolIntentProgressLine is printed immediately before a tool runs so the user sees
-// activity while the tool is in flight. The bullet is not colored so only the thinking line
-// above uses mode-colored bullets. It is indented under that line.
+// activity while the tool is in flight. It is indented under thinking lines and uses ▸
+// (not the mode-colored ● used for assistant reasoning).
 func FormatToolIntentProgressLine(toolName string, argsJSON []byte) string {
 	sum := agentlog.SummarizeArgs(toolName, argsJSON)
 	phrase := progressToolActionPhrase(toolName, argsJSON, sum)

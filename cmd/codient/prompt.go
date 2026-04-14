@@ -1,6 +1,7 @@
 package main
 
 import (
+	"codient/internal/codeindex"
 	"codient/internal/config"
 	"codient/internal/prompt"
 	"codient/internal/tools"
@@ -30,11 +31,7 @@ func fetchOptsFrom(cfg *config.Config, s *session, netLimit *tools.RateLimiter) 
 }
 
 func searchOptsFrom(cfg *config.Config, netLimit *tools.RateLimiter) *tools.SearchOptions {
-	if cfg.SearchBaseURL == "" {
-		return nil
-	}
 	return &tools.SearchOptions{
-		BaseURL:     cfg.SearchBaseURL,
 		MaxResults:  cfg.SearchMaxResults,
 		TimeoutSec:  30,
 		RateLimiter: netLimit,
@@ -46,11 +43,15 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session) *tools.Regi
 	fetch := fetchOptsFrom(cfg, s, netLimit)
 	search := searchOptsFrom(cfg, netLimit)
 	sgPath := cfg.AstGrep
+	var idx *codeindex.Index
+	if s != nil {
+		idx = s.codeIndex
+	}
 	if mode == prompt.ModeAsk {
-		return tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search, sgPath)
+		return tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx)
 	}
 	if mode == prompt.ModePlan {
-		return tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), fetch, search, sgPath)
+		return tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx)
 	}
 	var execOpts *tools.ExecOptions
 	if len(cfg.ExecAllowlist) > 0 {
@@ -70,7 +71,7 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session) *tools.Regi
 			execOpts.Allowlist = cfg.ExecAllowlist
 		}
 	}
-	return tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath)
+	return tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath, idx)
 }
 
 // buildAgentSystemPrompt assembles the layered agent system message (tools, repo notes, -system).

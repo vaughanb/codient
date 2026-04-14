@@ -587,8 +587,8 @@ func TestRunner_PostReplyCheckInjects(t *testing.T) {
 	cfg := &config.Config{}
 	r := &Runner{
 		LLM: llm, Cfg: cfg, Tools: reg,
-		PostReplyCheck: func(_ context.Context, reply string) string {
-			if strings.Contains(reply, "initial") {
+		PostReplyCheck: func(_ context.Context, info PostReplyCheckInfo) string {
+			if strings.Contains(info.Reply, "initial") {
 				return "[verify] check your suggestions"
 			}
 			return ""
@@ -644,7 +644,7 @@ func TestRunner_PostReplyCheckFiresOnce(t *testing.T) {
 	var calls int
 	r := &Runner{
 		LLM: llm, Cfg: cfg, Tools: reg,
-		PostReplyCheck: func(_ context.Context, _ string) string {
+		PostReplyCheck: func(_ context.Context, _ PostReplyCheckInfo) string {
 			calls++
 			return "verify"
 		},

@@ -47,7 +47,7 @@ func TestProgressToolLine_webSearch(t *testing.T) {
 func TestProgressToolIntentLine_webSearch(t *testing.T) {
 	got := ProgressToolIntentLine("web_search", []byte(`{"query":"exponential backoff"}`))
 	if !strings.HasPrefix(got, "    ▸ ") {
-		t.Fatalf("want nested indent + tool prelude mark: %q", got)
+		t.Fatalf("want nested indent + tool prelude (no mode ●): %q", got)
 	}
 	if !strings.Contains(got, "searching the web") {
 		t.Fatalf("want web search lead-in: %q", got)
@@ -79,6 +79,26 @@ func TestFormatThinkingProgressLine_plain(t *testing.T) {
 
 func TestFormatThinkingProgressLine_empty(t *testing.T) {
 	if FormatThinkingProgressLine(true, "build", "") != "" {
+		t.Fatal("expected empty")
+	}
+}
+
+func TestFormatSyntheticIntentThinkingLine_webSearch(t *testing.T) {
+	got := FormatSyntheticIntentThinkingLine(true, "ask", "web_search", []byte(`{"query":"Go 1.26 release"}`))
+	if !strings.HasPrefix(got, "  ● ") || !strings.Contains(got, "I'll search the web") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFormatStatusProgressLine_plain(t *testing.T) {
+	got := FormatStatusProgressLine(true, "ask", "verifying suggestions…")
+	if !strings.HasPrefix(got, "  ● ") || !strings.Contains(got, "verifying suggestions") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFormatStatusProgressLine_empty(t *testing.T) {
+	if FormatStatusProgressLine(true, "build", "  ") != "" {
 		t.Fatal("expected empty")
 	}
 }

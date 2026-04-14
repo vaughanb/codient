@@ -186,7 +186,7 @@ func TestInsertLinesWorkspace(t *testing.T) {
 	t.Run("via registry", func(t *testing.T) {
 		dir := t.TempDir()
 		os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0o644)
-		r := Default(dir, nil, nil, nil, "")
+		r := Default(dir, nil, nil, nil, "", nil)
 		raw, _ := json.Marshal(map[string]any{"path": "a.txt", "content": "world\n"})
 		out, err := r.Run(context.Background(), "insert_lines", json.RawMessage(raw))
 		if err != nil {
@@ -204,7 +204,7 @@ func TestInsertLinesWorkspace(t *testing.T) {
 
 func TestMutatingToolsViaRegistry(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, nil, nil, nil, "")
+	r := Default(dir, nil, nil, nil, "", nil)
 	_, err := r.Run(context.Background(), "write_file", json.RawMessage(`{"path":"t.txt","content":"z","mode":"create"}`))
 	if err != nil {
 		t.Fatal(err)

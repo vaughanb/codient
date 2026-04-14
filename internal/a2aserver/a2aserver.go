@@ -24,8 +24,7 @@ import (
 // Config holds everything the A2A server needs to handle incoming tasks.
 type Config struct {
 	Cfg *config.Config
-	// LLMForMode returns the chat client for build, ask, or plan. Required for correct
-	// per-mode API routing when models.* overrides use different base URLs.
+	// LLMForMode returns the chat client for the given mode (build, ask, or plan).
 	LLMForMode func(prompt.Mode) agent.ChatClient
 	Log        *agentlog.Logger
 	Version    string
@@ -199,9 +198,9 @@ func registryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
 	sgPath := cfg.AstGrep
 	switch mode {
 	case prompt.ModeAsk:
-		return tools.DefaultReadOnly(ws, fetch, search, sgPath)
+		return tools.DefaultReadOnly(ws, fetch, search, sgPath, nil)
 	case prompt.ModePlan:
-		return tools.DefaultReadOnlyPlan(ws, fetch, search, sgPath)
+		return tools.DefaultReadOnlyPlan(ws, fetch, search, sgPath, nil)
 	default:
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
@@ -211,7 +210,7 @@ func registryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
 				Allowlist:      cfg.ExecAllowlist,
 			}
 		}
-		return tools.Default(ws, execOpts, fetch, search, sgPath)
+		return tools.Default(ws, execOpts, fetch, search, sgPath, nil)
 	}
 }
 
@@ -230,11 +229,7 @@ func fetchOpts(cfg *config.Config, netLimit *tools.RateLimiter) *tools.FetchOpti
 }
 
 func searchOpts(cfg *config.Config, netLimit *tools.RateLimiter) *tools.SearchOptions {
-	if cfg.SearchBaseURL == "" {
-		return nil
-	}
 	return &tools.SearchOptions{
-		BaseURL:     cfg.SearchBaseURL,
 		MaxResults:  cfg.SearchMaxResults,
 		TimeoutSec:  30,
 		RateLimiter: netLimit,
