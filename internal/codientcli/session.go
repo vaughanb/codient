@@ -1,4 +1,4 @@
-package main
+package codientcli
 
 import (
 	"bufio"
@@ -35,9 +35,9 @@ import (
 )
 
 type session struct {
-	cfg      *config.Config
-	client   *openaiclient.Client
-	registry *tools.Registry
+	cfg              *config.Config
+	client           *openaiclient.Client
+	registry         *tools.Registry
 	agentLog         *agentlog.Logger
 	progressOut      io.Writer
 	mode             prompt.Mode

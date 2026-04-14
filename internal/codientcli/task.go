@@ -1,4 +1,4 @@
-package main
+package codientcli
 
 import (
 	"fmt"
@@ -68,4 +68,3 @@ func applyTaskToFirstTurnIfNeeded(priorTurns int, user, goal, taskFilePath strin
 	}
 	return prefixUserWithTask(user, dir), nil
 }
-

@@ -1,4 +1,4 @@
-package main
+package codientcli
 
 import (
 	"codient/internal/codeindex"

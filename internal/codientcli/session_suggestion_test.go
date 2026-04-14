@@ -1,4 +1,4 @@
-package main
+package codientcli
 
 import (
 	"testing"
@@ -89,9 +89,9 @@ func TestParsePostReplyGateAnswer(t *testing.T) {
 func TestSkipSuggestionVerifyForResearchTurn(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name  string
-		info  agent.PostReplyCheckInfo
-		skip  bool
+		name string
+		info agent.PostReplyCheckInfo
+		skip bool
 	}{
 		{
 			name: "web_search only, generic user prompt",
