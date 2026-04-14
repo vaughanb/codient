@@ -161,7 +161,6 @@ When `fetch_url` receives `Content-Type: text/html`, the body is converted to si
 | Variable | Description |
 |----------|-------------|
 | `CODIENT_STATE_DIR` | Directory for `config.json` and related state instead of `~/.codient`. |
-| `CODIENT_WORKSPACE` | Default workspace root for file and command tools when not set in config or via `-workspace`. |
 
 Run `codient -version` to print the binary version.
 

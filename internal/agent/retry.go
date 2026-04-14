@@ -57,7 +57,7 @@ func (r *Runner) callLLMOnce(ctx context.Context, params openai.ChatCompletionNe
 	useStream := streamTo != nil
 	// OpenAI-compatible local servers often return incomplete tool_calls over SSE; the accumulator
 	// then sees an empty ToolCalls slice and the agent skips native tool execution. Non-streaming
-	// completions usually preserve tool_calls. Opt back in with CODIENT_STREAM_WITH_TOOLS=1.
+	// completions usually preserve tool_calls. Opt back in with stream_with_tools in config.
 	if useStream && len(params.Tools) > 0 && r.Cfg != nil && !r.Cfg.StreamWithTools {
 		useStream = false
 	}

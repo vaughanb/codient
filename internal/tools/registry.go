@@ -92,7 +92,7 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 }
 
 // Default returns a registry with safe builtins and, when workspace is non-empty,
-// coding tools scoped to that directory (config workspace, -workspace, or CODIENT_WORKSPACE).
+// coding tools scoped to that directory (config workspace or -workspace).
 // exec enables run_command when non-nil and Allowlist is non-empty (exec_allowlist in config).
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty (fetch_allow_hosts / preapproved in config).
 // search enables web_search when non-nil (always enabled in default builds).

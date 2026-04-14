@@ -48,7 +48,7 @@ func PrepareAssistantText(text string, planMode bool) string {
 
 // WriteAssistant writes the assistant reply. When useMarkdown is true, renders
 // GitHub-flavored markdown with colors and syntax-highlighted code blocks; otherwise
-// prints plain text (for pipes, logs, or -plain / CODIENT_PLAIN=1).
+// prints plain text (for pipes, logs, or when -plain / config plain is set).
 // When planMode is true, ensures a "## Question" heading before the wait line when missing
 // so terminals show a styled Question section (see InsertPlanQuestionHeading).
 func WriteAssistant(w io.Writer, text string, useMarkdown, planMode bool) error {

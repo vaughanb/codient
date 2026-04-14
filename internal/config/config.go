@@ -125,10 +125,7 @@ func Load() (*Config, error) {
 	}
 	model := strings.TrimSpace(pc.Model)
 
-	ws := strings.TrimSpace(os.Getenv("CODIENT_WORKSPACE"))
-	if ws == "" {
-		ws = strings.TrimSpace(pc.Workspace)
-	}
+	ws := strings.TrimSpace(pc.Workspace)
 	if ws == "" {
 		if wd, err := os.Getwd(); err == nil {
 			if abs, err := filepath.Abs(wd); err == nil {

@@ -34,7 +34,7 @@ import (
 // the system string for your model.
 //
 // The REPL uses streaming for assistant text, but requests that include tools use non-streaming
-// completions by default (CODIENT_STREAM_WITH_TOOLS unset) so local servers preserve tool_calls.
+// completions by default (stream_with_tools false in config) so local servers preserve tool_calls.
 // Tests use both nil stream and io.Discard to cover those paths.
 //
 // Coverage: builtins (echo, get_time), read-only workspace tools (read_file, list_dir, grep,
@@ -282,22 +282,6 @@ func TestIntegration_AgentRunCommandGoVersion(t *testing.T) {
 	}
 }
 
-func sameWorkspacePath(a, b string) bool {
-	ga, err := filepath.Abs(a)
-	if err != nil {
-		return false
-	}
-	gb, err := filepath.Abs(b)
-	if err != nil {
-		return false
-	}
-	ga, gb = filepath.Clean(ga), filepath.Clean(gb)
-	if ga == gb {
-		return true
-	}
-	return strings.EqualFold(ga, gb)
-}
-
 func skipUnlessIntegration(t *testing.T) {
 	t.Helper()
 	if os.Getenv("CODIENT_INTEGRATION") != "1" {
@@ -312,7 +296,8 @@ func skipUnlessStrictTools(t *testing.T) {
 	}
 }
 
-// newLiveRunner loads config (respecting CODIENT_WORKSPACE for this process) and builds the default tool registry.
+// newLiveRunner loads config and builds the default tool registry. When workspace is non-empty,
+// cfg.Workspace is set to that path (fixture tests) so it matches the tools registry root.
 func newLiveRunner(t *testing.T, workspace string) (*agent.Runner, context.Context, context.CancelFunc) {
 	return newLiveRunnerOpts(t, workspace, nil)
 }
@@ -327,17 +312,22 @@ func newLiveRunnerOpts(t *testing.T, workspace string, exec *tools.ExecOptions) 
 	if err := cfg.RequireModel(); err != nil {
 		t.Fatal(err)
 	}
-	if workspace != "" && !sameWorkspacePath(cfg.Workspace, workspace) {
-		t.Fatalf("CODIENT_WORKSPACE must point at the fixture dir (got %q want %q)", cfg.Workspace, workspace)
+	wsRoot := ""
+	if workspace != "" {
+		wsRoot, err = filepath.Abs(workspace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Workspace = wsRoot
 	}
 	client := openaiclient.New(cfg)
-	reg := tools.Default(workspace, exec, nil, nil, "", nil, nil)
+	reg := tools.Default(wsRoot, exec, nil, nil, "", nil, nil)
 	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	return ar, ctx, cancel
 }
 
-// workspaceFixture creates a temp directory with the given relative path → contents map and sets CODIENT_WORKSPACE.
+// workspaceFixture creates a temp directory with the given relative path → contents map.
 func workspaceFixture(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -350,7 +340,6 @@ func workspaceFixture(t *testing.T, files map[string]string) string {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("CODIENT_WORKSPACE", root)
 	return root
 }
 

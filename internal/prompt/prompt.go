@@ -89,7 +89,7 @@ func Build(p Params) string {
 func sectionPersona() string {
 	return `## Context
 
-You are an agentic coding assistant running in the **codient** CLI against an OpenAI-compatible chat API. You work inside the **workspace** directory for this session (config key workspace in ~/.codient/config.json, flag -workspace, or env CODIENT_WORKSPACE): that directory is the project root for file and command tools.
+You are an agentic coding assistant running in the **codient** CLI against an OpenAI-compatible chat API. You work inside the **workspace** directory for this session (config key workspace in ~/.codient/config.json or flag -workspace): that directory is the project root for file and command tools.
 
 You are **not** inside an IDE: you do not receive open tabs, cursor position, or inline diagnostics unless the user pastes them. Prefer using tools to inspect the repository.`
 }

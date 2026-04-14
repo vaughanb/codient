@@ -175,7 +175,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, params openai.ChatCom
 // ProbeContextWindow tries to discover the loaded model's context window in tokens.
 // It queries the LM Studio native REST API (GET /api/v1/models) which is separate from
 // the OpenAI-compatible /v1/models. If the server is not LM Studio or the endpoint is
-// unavailable, returns (0, nil) so the caller falls back to CODIENT_CONTEXT_WINDOW.
+// unavailable, returns (0, nil); the session leaves ContextWindowTokens unchanged (still from config, possibly zero).
 func (c *Client) ProbeContextWindow(ctx context.Context, modelID string) (int, error) {
 	nativeBase := c.nativeBaseURL()
 	if nativeBase == "" {

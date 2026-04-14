@@ -1583,7 +1583,7 @@ func resolveAstGrep(cfg *config.Config, sc *bufio.Scanner) {
 }
 
 // probeAndSetContext tries to detect the server's context window for the current model.
-// If cfg.ContextWindowTokens is already set by the env var, this is a no-op.
+// If cfg.ContextWindowTokens is already set in config, this is a no-op.
 func (s *session) probeAndSetContext(ctx context.Context) {
 	if s.cfg.ContextWindowTokens > 0 {
 		return
