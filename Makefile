@@ -4,7 +4,7 @@ BIN_DIR := bin
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := $(BIN_DIR)/codient$(EXE)
 
-.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check lint govulncheck run release
+.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check lint govulncheck run release major minor patch
 
 all: build
 
@@ -27,7 +27,9 @@ help:
 	@echo "  make govulncheck    vulnerability scan on dependencies (go run)"
 	@echo "  make check          vet + test-unit (no live integration; safe for CI)"
 	@echo "  make clean          remove $(BIN_DIR)/"
-	@echo "  make release BUMP=patch   bump version (major|minor|patch), commit, tag, push"
+	@echo "  make release [patch]      bump version, commit, tag, push (default: patch)"
+	@echo "  make release minor        bump minor version"
+	@echo "  make release major        bump major version"
 
 build:
 	$(GO) build -o $(BIN) ./cmd/codient
@@ -85,12 +87,19 @@ run:
 
 VERSION_FILE := internal/codientcli/version.go
 CUR_VERSION   = $(shell sed -n 's/.*Version = "\(.*\)"/\1/p' $(VERSION_FILE))
-BUMP         ?= patch
+
+ifneq ($(filter major,$(MAKECMDGOALS)),)
+  BUMP = major
+else ifneq ($(filter minor,$(MAKECMDGOALS)),)
+  BUMP = minor
+else
+  BUMP = patch
+endif
+
+major minor patch:
+	@:
 
 release:
-ifndef BUMP
-	$(error BUMP is required: major, minor, or patch)
-endif
 	@CUR="$(CUR_VERSION)"; \
 	MAJOR=$$(echo "$$CUR" | cut -d. -f1); \
 	MINOR=$$(echo "$$CUR" | cut -d. -f2); \
