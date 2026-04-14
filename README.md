@@ -15,18 +15,32 @@
 
 ## Install
 
+**macOS / Linux:**
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/vaughanb/codient/main/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/vaughanb/codient/main/install.ps1 | iex
+```
+
+Both scripts detect your OS and architecture, download the latest release binary, and place it on your PATH. Set `CODIENT_INSTALL_DIR` to override the install location (defaults to `~/.local/bin` on Unix, `%LOCALAPPDATA%\codient` on Windows).
+
+**From source** (requires [Go](https://go.dev/dl/) 1.26+):
+
+```bash
+go install github.com/vaughanb/codient/cmd/codient@latest
+```
+
+Or clone and build with Make:
+
 ```bash
 git clone https://github.com/vaughanb/codient.git
 cd codient
-go install ./cmd/codient
-```
-
-Or build with Make:
-
-```bash
 make install   # installs codient to $(go env GOPATH)/bin
-# or
-make build     # outputs ./bin/codient
 ```
 
 ## Configuration

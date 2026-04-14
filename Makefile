@@ -4,7 +4,7 @@ BIN_DIR := bin
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := $(BIN_DIR)/codient$(EXE)
 
-.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check lint govulncheck run
+.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check lint govulncheck run release
 
 all: build
 
@@ -27,6 +27,7 @@ help:
 	@echo "  make govulncheck    vulnerability scan on dependencies (go run)"
 	@echo "  make check          vet + test-unit (no live integration; safe for CI)"
 	@echo "  make clean          remove $(BIN_DIR)/"
+	@echo "  make release BUMP=patch   bump version (major|minor|patch), commit, tag, push"
 
 build:
 	$(GO) build -o $(BIN) ./cmd/codient
@@ -81,3 +82,31 @@ check: vet test-unit
 
 run:
 	$(GO) run ./cmd/codient -- $(ARGS)
+
+VERSION_FILE := internal/codientcli/version.go
+CUR_VERSION   = $(shell sed -n 's/.*Version = "\(.*\)"/\1/p' $(VERSION_FILE))
+BUMP         ?= patch
+
+release:
+ifndef BUMP
+	$(error BUMP is required: major, minor, or patch)
+endif
+	@CUR="$(CUR_VERSION)"; \
+	MAJOR=$$(echo "$$CUR" | cut -d. -f1); \
+	MINOR=$$(echo "$$CUR" | cut -d. -f2); \
+	PATCH=$$(echo "$$CUR" | cut -d. -f3); \
+	case "$(BUMP)" in \
+		major) MAJOR=$$((MAJOR + 1)); MINOR=0; PATCH=0 ;; \
+		minor) MINOR=$$((MINOR + 1)); PATCH=0 ;; \
+		patch) PATCH=$$((PATCH + 1)) ;; \
+		*) echo "error: BUMP must be major, minor, or patch"; exit 1 ;; \
+	esac; \
+	NEXT="$$MAJOR.$$MINOR.$$PATCH"; \
+	TAG="v$$NEXT"; \
+	echo "Bumping version: $$CUR -> $$NEXT ($$TAG)"; \
+	sed -i.bak 's/const Version = ".*"/const Version = "'$$NEXT'"/' $(VERSION_FILE) && rm -f $(VERSION_FILE).bak; \
+	git add $(VERSION_FILE); \
+	git commit -m "release $$TAG"; \
+	git tag "$$TAG"; \
+	git push origin HEAD "$$TAG"; \
+	echo "Released $$TAG"
