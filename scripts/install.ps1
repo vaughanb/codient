@@ -13,9 +13,9 @@
         return
     }
 
-    $Arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
-        'X64'   { 'amd64' }
-        'Arm64' { 'arm64' }
+    $Arch = switch ($env:PROCESSOR_ARCHITECTURE) {
+        'AMD64' { 'amd64' }
+        'ARM64' { 'arm64' }
         default { Fail "unsupported architecture: $_"; return }
     }
 
