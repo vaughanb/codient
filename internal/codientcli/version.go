@@ -1,4 +1,4 @@
 package codientcli
 
 // Version is the codient release version (CLI -version, A2A agent card).
-const Version = "0.2.0"
+const Version = "0.3.0"
