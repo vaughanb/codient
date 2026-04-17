@@ -125,7 +125,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `exec_timeout_sec` | Per-command timeout (max 3600) | `120` |
 | `exec_max_output_bytes` | Cap on combined stdout+stderr (max 10 MiB) | `262144` |
 | **Context** | | |
-| `context_window` | Model context window in tokens (`0` = probe server) | `0` |
+| `context_window` | Model context window in tokens (`0` = probe server at startup; shown on the welcome banner as **Context**) | `0` |
 | `context_reserve` | Tokens reserved for the assistant reply | `4096` |
 | **LLM** | | |
 | `max_llm_retries` | Retries for transient LLM errors | `2` |
@@ -159,7 +159,8 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `project_context` | `off` to skip auto-injected project hints | *(empty)* |
 | **Tools** | | |
 | `ast_grep` | ast-grep binary path: `auto` (default), explicit path, or `off` to disable | *(auto)* |
-| `embedding_model` | Model id for `/v1/embeddings` (same base URL as chat). Enables the `semantic_search` tool; leave empty to disable | *(empty)* |
+| `embedding_model` | Model id for `/v1/embeddings` (same base URL as chat). Enables the `semantic_search` tool; leave empty to disable. The welcome banner shows **Embeddings** (model id, or `off`) | *(empty)* |
+| `hooks_enabled` | Enable [lifecycle hooks](#lifecycle-hooks) (`hooks.json` under `~/.codient` and `<workspace>/.codient`) | `false` |
 | `cost_per_mtok` | Optional `{"input":N,"output":N}` USD per 1M tokens — overrides built-in pricing for `/cost` and session cost estimates | *(built-in table)* |
 | **Update** | | |
 | `update_notify` | Show interactive update prompt on REPL startup | `true` |
@@ -238,6 +239,56 @@ Configure MCP servers in `~/.codient/config.json` under the `mcp_servers` key. E
 - The agent calls MCP tools the same way as built-in tools — no special handling needed.
 - If a server fails to connect, a warning is printed and the session continues without that server's tools.
 - Use the `/mcp` slash command to inspect connected servers and their tools.
+
+### Lifecycle hooks
+
+Codient can run **shell commands** at specific points in the agent lifecycle (similar to hooks in Claude Code, Cursor, and OpenAI Codex CLI). Hooks are **opt-in**: set **`hooks_enabled`** to **`true`** in `~/.codient/config.json` or via **`/config hooks_enabled true`**.
+
+**Discovery:** Both of these files are loaded and merged (all matching hook groups run):
+
+- `~/.codient/hooks.json` (or `$CODIENT_STATE_DIR/hooks.json`)
+- `<workspace>/.codient/hooks.json`
+
+**Schema** (nested event → matcher → handlers):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command|run_shell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .codient/hooks/check.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- **`matcher`** is a regular expression (Go RE2). Empty or omitted matches all tools for tool events; **`SessionStart`** matches against `source` (`startup` or `resume`).
+- **`type`** is **`command`** only (phase 1). The command receives **JSON on stdin** (session id, cwd, hook name, model, `turn_id`, plus event-specific fields).
+- **`timeout`** is in seconds (default 600 if omitted). **`failClosed`**: when `true`, a crash, timeout, or invalid JSON from that handler is treated as a failure (blocking for `PreToolUse` / `UserPromptSubmit` when applicable).
+- **Exit code `2`** without JSON means “block” (stderr can carry a reason). Other non-zero exits **fail open** unless **`failClosed`** is set.
+
+**Events:**
+
+| Event | When | Matcher |
+|-------|------|-----------|
+| `SessionStart` | REPL or `-print` session begins | `startup` / `resume` |
+| `PreToolUse` | Before each tool runs | Tool name (e.g. `write_file`, `mcp__…`) |
+| `PostToolUse` | After each tool runs | Tool name |
+| `UserPromptSubmit` | Before your message is sent to the model | *(all)* |
+| `Stop` | Model returns a **text** reply (no tool calls) in a turn | *(all)* — `decision: "block"` with **`reason`** requests another model round with that text as the user message (Codex-style continuation) |
+| `SessionEnd` | Session exits | *(all)* |
+
+**Stdout JSON** (subset): `decision` (`block` to deny a prompt/tool or, for `Stop`, to continue with `reason`), `reason`, `additional_context`, `system_message`, `continue` (`false` stops `Stop` continuation).
+
+Use **`/hooks`** in the REPL to list configured hooks. Sub-agents (`delegate_task`) do not run parent hooks.
 
 ### Auto-update
 
@@ -382,6 +433,7 @@ Inside a session you can use slash commands to control the agent:
 | `/model <name>` | Switch to a different model (shortcut for `/config model`) |
 | `/workspace <path>` | Change the workspace directory |
 | `/tools` | List tools available in current mode |
+| `/hooks` | List configured lifecycle hooks (requires `hooks_enabled`) |
 | `/mcp [server]` | List connected MCP servers and tool counts; with a server name, list that server's tools |
 | `/status` | Show session state (mode, model, turns, estimated context, API token totals, auto-check, exec policy) |
 | `/cost` (or `/tokens`) | Show session token counts (prompt/completion/total) and estimated cost |

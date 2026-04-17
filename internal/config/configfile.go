@@ -100,6 +100,9 @@ type PersistentConfig struct {
 
 	// CostPerMTok overrides built-in pricing for cost estimates (USD per 1M input/output tokens).
 	CostPerMTok *CostPerMTok `json:"cost_per_mtok,omitempty"`
+
+	// HooksEnabled opts into ~/.codient/hooks.json and <workspace>/.codient/hooks.json lifecycle hooks.
+	HooksEnabled bool `json:"hooks_enabled,omitempty"`
 }
 
 // ModeConnectionOverride holds optional per-mode overrides for base_url, api_key, and model.
@@ -263,6 +266,7 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		pc.UpdateNotify = &f
 	}
 	pc.CostPerMTok = cfg.CostPerMTok
+	pc.HooksEnabled = cfg.HooksEnabled
 	return pc
 }
 

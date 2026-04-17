@@ -116,6 +116,9 @@ type Config struct {
 
 	// CostPerMTok, when set, overrides built-in model pricing for session cost estimates (USD per 1M tokens).
 	CostPerMTok *CostPerMTok
+
+	// HooksEnabled loads ~/.codient/hooks.json and <workspace>/.codient/hooks.json (default false).
+	HooksEnabled bool
 }
 
 // CostPerMTok holds optional USD per million input/output tokens for cost display.
@@ -276,6 +279,7 @@ func Load() (*Config, error) {
 		Model:                model,
 		MaxConcurrent:        maxConcurrent,
 		Workspace:            ws,
+		HooksEnabled:         pc.HooksEnabled,
 		ExecAllowlist:        execAllowlist,
 		ExecTimeoutSeconds:   execTimeout,
 		ExecMaxOutputBytes:   execMaxOut,

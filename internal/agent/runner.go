@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/openai/openai-go/v3"
@@ -15,6 +16,7 @@ import (
 
 	"codient/internal/agentlog"
 	"codient/internal/config"
+	"codient/internal/hooks"
 	"codient/internal/tokenest"
 	"codient/internal/tokentracker"
 	"codient/internal/tools"
@@ -88,6 +90,11 @@ type Runner struct {
 	MaxCostUSD float64
 	// EstimateSessionCost estimates USD for Tracker.Session() after each LLM call; optional.
 	EstimateSessionCost EstimateSessionCostFn
+	// Hooks runs lifecycle hooks (PreToolUse, PostToolUse, Stop); nil disables.
+	Hooks *hooks.Manager
+	// StopHookActive is true when the next assistant text follows a Stop-hook continuation in this RunConversation.
+	StopHookActive bool
+	toolUseSeq     atomic.Uint64
 }
 
 // Run carries out one user turn (no prior conversation history).
@@ -104,6 +111,8 @@ func (r *Runner) Run(ctx context.Context, system string, user openai.ChatComplet
 // streamTo selects streaming for this turn only (nil = non-streaming completion).
 // streamed is true when the final reply was produced via streaming (skip glamour in the caller).
 func (r *Runner) RunConversation(ctx context.Context, system string, history []openai.ChatCompletionMessageParamUnion, user openai.ChatCompletionMessageParamUnion, streamTo io.Writer) (string, []openai.ChatCompletionMessageParamUnion, bool, error) {
+	r.StopHookActive = false
+	r.toolUseSeq.Store(0)
 	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(history)+16)
 	sys := strings.TrimSpace(system)
 	sysOffset := 0
@@ -228,7 +237,8 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 								r.Log.ToolStart(tc.Name, agentlog.SummarizeArgs(tc.Name, args))
 							}
 							t1 := time.Now()
-							out, toolErr := r.Tools.Run(ctx, tc.Name, args)
+							toolID := fmt.Sprintf("tu-%d", r.toolUseSeq.Add(1))
+							out, toolErr := r.runOneTool(ctx, tc.Name, args, toolID)
 							toolDur := time.Since(t1)
 							if r.Log != nil {
 								r.Log.ToolEnd(tc.Name, toolDur, toolErr, nil)
@@ -318,6 +328,22 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 						continue
 					}
 				}
+				if r.Hooks != nil {
+					sr, err := r.Hooks.RunStop(ctx, content, r.StopHookActive)
+					if err != nil {
+						return "", nil, false, err
+					}
+					if strings.TrimSpace(sr.SystemMessage) != "" && r.Progress != nil {
+						fmt.Fprintf(r.Progress, "%s\n", sr.SystemMessage)
+					}
+					if sr.Continue {
+						msgs = append(msgs, openai.AssistantMessage(content))
+						msgs = append(msgs, openai.UserMessage(sr.ContinuationPrompt))
+						r.StopHookActive = true
+						continue
+					}
+				}
+				r.StopHookActive = false
 				msgs = append(msgs, openai.AssistantMessage(content))
 				newHist := msgs[sysOffset:]
 				return content, newHist, streamedFinal, nil
@@ -377,7 +403,8 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 					r.Log.ToolStart(v.Function.Name, agentlog.SummarizeArgs(v.Function.Name, args))
 				}
 				t1 := time.Now()
-				out, toolErr := r.Tools.Run(ctx, v.Function.Name, args)
+				toolID := fmt.Sprintf("tu-%d", r.toolUseSeq.Add(1))
+				out, toolErr := r.runOneTool(ctx, v.Function.Name, args, toolID)
 				toolDur := time.Since(t1)
 				summary := map[string]any{}
 				if v.Function.Name == "run_command" || v.Function.Name == "run_shell" {
@@ -451,6 +478,42 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 type autoCheckInput struct {
 	name    string
 	content string
+}
+
+func (r *Runner) runOneTool(ctx context.Context, name string, args json.RawMessage, toolUseID string) (display string, underlyingErr error) {
+	if r.Hooks != nil {
+		pre, herr := r.Hooks.RunPreToolUse(ctx, name, args, toolUseID)
+		if herr != nil {
+			return fmt.Sprintf("error: hook: %v", herr), nil
+		}
+		if !pre.Allow {
+			if strings.TrimSpace(pre.SystemMessage) != "" && r.Progress != nil {
+				fmt.Fprintf(r.Progress, "%s\n", pre.SystemMessage)
+			}
+			return fmt.Sprintf("error: blocked by hook: %s", pre.BlockReason), nil
+		}
+		if strings.TrimSpace(pre.SystemMessage) != "" && r.Progress != nil {
+			fmt.Fprintf(r.Progress, "%s\n", pre.SystemMessage)
+		}
+	}
+	out, toolErr := r.Tools.Run(ctx, name, args)
+	underlyingErr = toolErr
+	display = out
+	if toolErr != nil {
+		display = fmt.Sprintf("error: %v", toolErr)
+	}
+	if r.Hooks != nil {
+		post, herr := r.Hooks.RunPostToolUse(ctx, name, args, toolUseID, out, toolErr)
+		if herr == nil {
+			if strings.TrimSpace(post.SystemMessage) != "" && r.Progress != nil {
+				fmt.Fprintf(r.Progress, "%s\n", post.SystemMessage)
+			}
+			if strings.TrimSpace(post.AdditionalContext) != "" {
+				display = display + "\n\n[hook context]\n" + post.AdditionalContext
+			}
+		}
+	}
+	return display, underlyingErr
 }
 
 func (r *Runner) autoCheckAfterMutations(ctx context.Context, results []autoCheckInput) (inject string, progress string) {

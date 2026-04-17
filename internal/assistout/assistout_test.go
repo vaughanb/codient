@@ -40,12 +40,14 @@ func TestWriteAssistant_EmptyPlain(t *testing.T) {
 func TestWriteWelcome_Plain(t *testing.T) {
 	var buf bytes.Buffer
 	WriteWelcome(&buf, WelcomeParams{
-		Plain:     true,
-		Repl:      true,
-		Mode:      "plan",
-		Workspace: "/tmp/ws",
-		Model:     "m1",
-		Version:   "0.3.0",
+		Plain:               true,
+		Repl:                true,
+		Mode:                "plan",
+		Workspace:           "/tmp/ws",
+		Model:               "m1",
+		Version:             "0.3.0",
+		ContextWindowTokens: 8192,
+		EmbeddingModel:      "text-embedding-3-small",
 	})
 	s := buf.String()
 	if !strings.Contains(s, "█") || !strings.Contains(s, "Session") || !strings.Contains(s, "plan") {
@@ -62,6 +64,25 @@ func TestWriteWelcome_Plain(t *testing.T) {
 	}
 	if !strings.Contains(s, "Model m1") {
 		t.Fatalf("expected Model line: %q", s)
+	}
+	if !strings.Contains(s, "Context 8192 tokens") {
+		t.Fatalf("expected Context line: %q", s)
+	}
+	if !strings.Contains(s, "Embeddings text-embedding-3-small") {
+		t.Fatalf("expected Embeddings line: %q", s)
+	}
+}
+
+func TestWriteWelcome_Plain_EmbeddingsOff(t *testing.T) {
+	var buf bytes.Buffer
+	WriteWelcome(&buf, WelcomeParams{
+		Plain: true,
+		Repl:  true,
+		Mode:  "build",
+	})
+	s := buf.String()
+	if !strings.Contains(s, "Embeddings off") {
+		t.Fatalf("expected Embeddings off: %q", s)
 	}
 }
 
@@ -121,6 +142,24 @@ func TestWriteWelcome_Quiet_Version(t *testing.T) {
 	s := buf.String()
 	if s != "codient 1.0.0\n" {
 		t.Fatalf("expected version line only, got %q", s)
+	}
+}
+
+func TestWriteWelcome_Quiet_ContextTokens(t *testing.T) {
+	var buf bytes.Buffer
+	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, Mode: "build", ContextWindowTokens: 16384})
+	s := buf.String()
+	if s != "codient: context window 16384 tokens\n" {
+		t.Fatalf("expected context line only, got %q", s)
+	}
+}
+
+func TestWriteWelcome_Quiet_EmbeddingModel(t *testing.T) {
+	var buf bytes.Buffer
+	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, Mode: "build", EmbeddingModel: "nomic-embed-text"})
+	s := buf.String()
+	if s != "codient: embeddings nomic-embed-text\n" {
+		t.Fatalf("expected embeddings line only, got %q", s)
 	}
 }
 

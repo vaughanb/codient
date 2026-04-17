@@ -26,6 +26,7 @@ import (
 	"codient/internal/config"
 	"codient/internal/designstore"
 	"codient/internal/gitutil"
+	"codient/internal/hooks"
 	"codient/internal/imageutil"
 	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
@@ -84,6 +85,13 @@ type session struct {
 	fetchAllow    *tools.SessionFetchAllow // mutable fetch_url host approvals for this process; nil until first fetch
 	fetchPromptMu sync.Mutex               // serializes fetch allow prompts and post-lock re-checks
 
+	// replPromptMu serializes the REPL prompt (no trailing newline) and async stderr lines
+	// (e.g. semantic index completion) so messages do not append to the same line as the prompt.
+	replPromptMu sync.Mutex
+	// replSkipFirstLoopPrompt is set when replAsyncStderrNote redraws the prompt before the first
+	// readUserInput; the first loop iteration skips a duplicate "\n" + prompt pair.
+	replSkipFirstLoopPrompt bool
+
 	codeIndex *codeindex.Index // semantic search index; nil when embedding_model is not configured
 
 	mcpMgr *mcpclient.Manager // MCP server connections; nil when no mcp_servers configured
@@ -105,6 +113,9 @@ type session struct {
 	// Multimodal: images from -image (first turn) or /image (next message).
 	initialImages []imageutil.ImageAttachment
 	pendingImages []imageutil.ImageAttachment
+
+	// hooksMgr is loaded when hooks_enabled is true; nil otherwise.
+	hooksMgr *hooks.Manager
 }
 
 type undoEntry struct {
@@ -122,6 +133,7 @@ func (s *session) newRunner() *agent.Runner {
 		ProgressPlain: s.cfg.Plain,
 		ProgressMode:  string(s.mode),
 		Tracker:       s.tokenTracker,
+		Hooks:         s.hooksMgr,
 	}
 	if s.printMode {
 		if s.maxTurns > 0 {
@@ -173,6 +185,16 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user openai.ChatCompletionMessageParamUnion) (reply string, err error) {
 	if err := s.cfg.RequireModel(); err != nil {
 		return "", err
+	}
+	if s.hooksMgr != nil {
+		s.hooksMgr.NextTurn()
+		up, herr := s.hooksMgr.RunUserPromptSubmit(ctx, agent.UserMessageText(user))
+		if herr != nil {
+			return "", herr
+		}
+		if up.Blocked {
+			return "", fmt.Errorf("%s", up.Reason)
+		}
 	}
 	if s.tokenTracker != nil {
 		s.tokenTracker.MarkTurnStart()
@@ -496,20 +518,45 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 	if s.mcpMgr != nil {
 		defer s.mcpMgr.Close()
 	}
+	wsEarly := s.cfg.EffectiveWorkspace()
+	if strings.TrimSpace(s.sessionID) == "" {
+		s.sessionID = sessionstore.NewID(wsEarly)
+	}
+	if hm, herr := hooks.LoadForConfig(s.cfg.HooksEnabled, wsEarly, s.cfg.Model, s.sessionID); herr != nil {
+		fmt.Fprintf(os.Stderr, "codient: hooks: %v\n", herr)
+	} else {
+		s.hooksMgr = hm
+	}
+	defer func() {
+		if s.hooksMgr != nil {
+			s.hooksMgr.RunSessionEnd(context.Background())
+		}
+	}()
 	s.warnIfNotGitRepo()
 	if !s.printMode {
+		s.probeAndSetContext(ctx)
 		assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
-			Plain:     s.cfg.Plain,
-			Quiet:     s.cfg.Quiet,
-			Repl:      false,
-			Mode:      string(s.mode),
-			Workspace: s.cfg.EffectiveWorkspace(),
-			Model:     s.cfg.Model,
-			Version:   Version,
+			Plain:               s.cfg.Plain,
+			Quiet:               s.cfg.Quiet,
+			Repl:                false,
+			Mode:                string(s.mode),
+			Workspace:           s.cfg.EffectiveWorkspace(),
+			Model:               s.cfg.Model,
+			Version:             Version,
+			ContextWindowTokens: s.cfg.ContextWindowTokens,
+			EmbeddingModel:      s.cfg.EmbeddingModel,
 		})
 	}
 	if s.cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", s.cfg.EffectiveWorkspace(), s.mode, strings.Join(s.registry.Names(), ", "))
+	}
+	if s.hooksMgr != nil {
+		add, herr := s.hooksMgr.RunSessionStart(ctx, hooks.SessionStartup)
+		if herr != nil {
+			fmt.Fprintf(os.Stderr, "codient: hooks SessionStart: %v\n", herr)
+		} else if strings.TrimSpace(add) != "" {
+			s.systemPrompt += "\n\n# Hook context (SessionStart)\n" + add
+		}
 	}
 	rawUser := user
 	user, err := applyTaskToFirstTurnIfNeeded(0, user, s.goal, s.taskFile)
@@ -612,28 +659,21 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		s.sessionID = sessionstore.NewID(ws)
 	}
 
+	if hm, herr := hooks.LoadForConfig(s.cfg.HooksEnabled, ws, s.cfg.Model, s.sessionID); herr != nil {
+		fmt.Fprintf(os.Stderr, "codient: hooks: %v\n", herr)
+	} else {
+		s.hooksMgr = hm
+	}
+	defer func() {
+		if s.hooksMgr != nil {
+			s.hooksMgr.RunSessionEnd(context.Background())
+		}
+	}()
+
 	config.SaveLastMode(string(s.mode))
 
 	s.captureGitSessionState(ws)
 	s.warnIfNotGitRepo()
-	assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
-		Plain:         s.cfg.Plain,
-		Quiet:         s.cfg.Quiet,
-		Repl:          true,
-		Mode:          string(s.mode),
-		Workspace:     ws,
-		Model:         s.cfg.Model,
-		ResumeSummary: resumeSummary,
-		Version:       Version,
-	})
-	if s.cfg.Verbose {
-		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", ws, s.mode, strings.Join(s.registry.Names(), ", "))
-	}
-	fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
-
-	if s.mcpMgr != nil {
-		defer s.mcpMgr.Close()
-	}
 
 	sc := bufio.NewScanner(os.Stdin)
 	s.scanner = sc
@@ -651,6 +691,46 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	}
 
 	s.probeAndSetContext(ctx)
+
+	if s.hooksMgr != nil {
+		src := hooks.SessionStartup
+		if strings.TrimSpace(resumeSummary) != "" {
+			src = hooks.SessionResume
+		}
+		add, herr := s.hooksMgr.RunSessionStart(ctx, src)
+		if herr != nil {
+			fmt.Fprintf(os.Stderr, "codient: hooks SessionStart: %v\n", herr)
+		} else if strings.TrimSpace(add) != "" {
+			s.systemPrompt += "\n\n# Hook context (SessionStart)\n" + add
+		}
+	}
+
+	assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
+		Plain:               s.cfg.Plain,
+		Quiet:               s.cfg.Quiet,
+		Repl:                true,
+		Mode:                string(s.mode),
+		Workspace:           ws,
+		Model:               s.cfg.Model,
+		ResumeSummary:       resumeSummary,
+		Version:             Version,
+		ContextWindowTokens: s.cfg.ContextWindowTokens,
+		EmbeddingModel:      s.cfg.EmbeddingModel,
+	})
+	if s.cfg.Verbose {
+		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", ws, s.mode, strings.Join(s.registry.Names(), ", "))
+	}
+	fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
+
+	if s.mcpMgr != nil {
+		defer s.mcpMgr.Close()
+	}
+
+	// Print before startCodeIndex: the index goroutine may redraw the REPL prompt via
+	// replAsyncStderrNote; any later stderr line without a leading newline would append
+	// to that prompt line (e.g. "codient: type /help" glued to "[ask] > ").
+	fmt.Fprintf(os.Stderr, "codient: type /help for commands, /exit to quit\n")
+
 	s.startCodeIndex(ctx)
 
 	if s.currentPlan != nil && s.planPhase != "" && s.planPhase != planstore.PhaseDone {
@@ -658,8 +738,6 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	}
 
 	s.maybePromptUpdate(sc)
-
-	fmt.Fprintf(os.Stderr, "codient: type /help for commands, /exit to quit\n")
 
 	// Register slash commands.
 	cmds := s.buildSlashCommands(ctx, sc)
@@ -697,9 +775,10 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		s.showGitDiffIfBuild()
 	}
 	done := false
+	firstReplTurn := true
 	for !done {
-		fmt.Fprint(os.Stderr, "\n")
-		s.printPrompt()
+		s.replPrintPromptForTurn(firstReplTurn)
+		firstReplTurn = false
 		line, ok := readUserInput(sc)
 		if !ok {
 			break
@@ -770,12 +849,48 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	return 0
 }
 
-func (s *session) printPrompt() {
+// writeREPLPromptUnlocked writes the current REPL prompt (or plan answer prefix) to stderr.
+// Caller must hold replPromptMu when used together with replAsyncStderrNote.
+func (s *session) writeREPLPromptUnlocked() {
 	if s.mode == prompt.ModePlan && assistout.ReplySignalsPlanWait(s.lastReply) {
 		fmt.Fprint(os.Stderr, assistout.PlanAnswerPrefix(s.cfg.Plain))
 	} else {
 		fmt.Fprint(os.Stderr, assistout.SessionPrompt(s.cfg.Plain, string(s.mode)))
 	}
+}
+
+// replPrintPromptForTurn prints the REPL prompt line. isFirstTurn is true only for the first
+// iteration of the main REPL loop; async stderr notes may set replSkipFirstLoopPrompt so we
+// do not repeat a prompt already drawn before the first readUserInput.
+func (s *session) replPrintPromptForTurn(isFirstTurn bool) {
+	s.replPromptMu.Lock()
+	defer s.replPromptMu.Unlock()
+	if isFirstTurn && s.replSkipFirstLoopPrompt {
+		s.replSkipFirstLoopPrompt = false
+		return
+	}
+	if !isFirstTurn {
+		s.replSkipFirstLoopPrompt = false // drop flag if async set it after the first prompt
+		fmt.Fprint(os.Stderr, "\n")
+	}
+	s.writeREPLPromptUnlocked()
+}
+
+// replAsyncStderrNote prints a full line (or lines) to stderr while the REPL may be showing
+// a prompt without a trailing newline. It moves to a new line, prints msg, then redraws the prompt.
+func (s *session) replAsyncStderrNote(msg string) {
+	if msg == "" {
+		return
+	}
+	s.replPromptMu.Lock()
+	defer s.replPromptMu.Unlock()
+	fmt.Fprint(os.Stderr, "\n")
+	fmt.Fprint(os.Stderr, msg)
+	if !strings.HasSuffix(msg, "\n") {
+		fmt.Fprint(os.Stderr, "\n")
+	}
+	s.writeREPLPromptUnlocked()
+	s.replSkipFirstLoopPrompt = true
 }
 
 // offerPlanHandoff prompts the user with a structured approval dialog after a plan
@@ -892,6 +1007,42 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			fmt.Fprint(os.Stderr, cmds.Help())
 			fmt.Fprint(os.Stderr, "\nTip: end a line with \\ for multiline input. Pasting multiline text is also supported.\n")
 			fmt.Fprint(os.Stderr, "Images: /image path.png attaches to your next message; or use @image:path in text; or codient -image path.png …\n")
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "hooks",
+		Description: "list configured lifecycle hooks (requires hooks_enabled)",
+		Run: func(string) error {
+			if s.hooksMgr == nil || s.hooksMgr.IsEmpty() {
+				fmt.Fprintf(os.Stderr, "No hooks loaded. Set hooks_enabled=true in /config and add ~/.codient/hooks.json or <workspace>/.codient/hooks.json\n")
+				return nil
+			}
+			desc := s.hooksMgr.ListDescriptors()
+			if len(desc) == 0 {
+				fmt.Fprintf(os.Stderr, "hooks.json loaded but no command hooks are configured.\n")
+				return nil
+			}
+			var cur string
+			for _, d := range desc {
+				if d.Event != cur {
+					if cur != "" {
+						fmt.Fprint(os.Stderr, "\n")
+					}
+					cur = d.Event
+					fmt.Fprintf(os.Stderr, "[%s]\n", d.Event)
+				}
+				m := d.Matcher
+				if strings.TrimSpace(m) == "" {
+					m = "(all)"
+				}
+				src := d.SourcePath
+				if src == "" {
+					src = "?"
+				}
+				fmt.Fprintf(os.Stderr, "  matcher %q  timeout %ds  %s\n    %s\n", m, d.TimeoutSec, filepath.Base(src), d.Command)
+			}
+			fmt.Fprint(os.Stderr, "\n")
 			return nil
 		},
 	})
@@ -1386,6 +1537,16 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 	case "embedding_model":
 		s.startCodeIndex(ctx)
+	case "hooks_enabled":
+		ws := s.cfg.EffectiveWorkspace()
+		if strings.TrimSpace(s.sessionID) == "" {
+			s.sessionID = sessionstore.NewID(ws)
+		}
+		if hm, herr := hooks.LoadForConfig(s.cfg.HooksEnabled, ws, s.cfg.Model, s.sessionID); herr != nil {
+			fmt.Fprintf(os.Stderr, "codient: hooks reload: %v\n", herr)
+		} else {
+			s.hooksMgr = hm
+		}
 	}
 
 	if mode, _, ok := parseModeConfigKey(key); ok && mode == string(s.mode) {
@@ -1458,6 +1619,7 @@ func (s *session) printAllConfig() {
 		embModel = "(not configured)"
 	}
 	fmt.Fprintf(w, "  embedding_model:       %s\n", embModel)
+	fmt.Fprintf(w, "  hooks_enabled:         %v\n", s.cfg.HooksEnabled)
 	fmt.Fprintf(w, "\n  -- Cost estimate --\n")
 	if s.cfg.CostPerMTok != nil {
 		fmt.Fprintf(w, "  cost_per_mtok:         %g %g (input output USD per 1M)\n", s.cfg.CostPerMTok.Input, s.cfg.CostPerMTok.Output)
@@ -1573,6 +1735,8 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return s.cfg.AstGrep, true
 	case "embedding_model":
 		return s.cfg.EmbeddingModel, true
+	case "hooks_enabled":
+		return strconv.FormatBool(s.cfg.HooksEnabled), true
 	case "cost_per_mtok":
 		if s.cfg.CostPerMTok == nil {
 			return "(not set — built-in pricing table when available)", true
@@ -1770,6 +1934,12 @@ func (s *session) setConfig(key, value string) error {
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 	case "embedding_model":
 		s.cfg.EmbeddingModel = value
+	case "hooks_enabled":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("hooks_enabled must be true or false")
+		}
+		s.cfg.HooksEnabled = b
 	case "cost_per_mtok":
 		fields := strings.Fields(value)
 		if len(fields) == 0 || strings.EqualFold(fields[0], "off") || strings.EqualFold(fields[0], "clear") {
@@ -1907,7 +2077,6 @@ func (s *session) probeAndSetContext(ctx context.Context) {
 		return
 	}
 	s.cfg.ContextWindowTokens = n
-	fmt.Fprintf(os.Stderr, "codient: detected context window: %d tokens\n", n)
 }
 
 func messageTextForEstimate(m openai.ChatCompletionMessageParamUnion) string {
@@ -1946,9 +2115,9 @@ func (s *session) startCodeIndex(ctx context.Context) {
 		s.codeIndex.BuildOrUpdate(ctx)
 		n := s.codeIndex.Len()
 		if err := s.codeIndex.BuildErr(); err != nil {
-			fmt.Fprintf(os.Stderr, "codient: semantic index: %v\n", err)
+			s.replAsyncStderrNote(fmt.Sprintf("codient: semantic index: %v\n", err))
 		} else if n > 0 {
-			fmt.Fprintf(os.Stderr, "codient: semantic index ready (%d files)\n", n)
+			s.replAsyncStderrNote(fmt.Sprintf("codient: semantic index ready (%d files)\n", n))
 		}
 	}()
 }

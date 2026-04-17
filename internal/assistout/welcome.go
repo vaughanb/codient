@@ -90,6 +90,10 @@ type WelcomeParams struct {
 	ResumeSummary string
 	// Version is the codient release (e.g. from codientcli.Version). Shown when non-empty.
 	Version string
+	// ContextWindowTokens is the model context window in tokens (0 = unlimited / not limited).
+	ContextWindowTokens int
+	// EmbeddingModel is the /v1/embeddings model id when semantic search is enabled; empty means off.
+	EmbeddingModel string
 }
 
 // WriteWelcome prints a short colorful banner. Skipped when Quiet is true,
@@ -101,6 +105,12 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 	if p.Quiet {
 		if v := strings.TrimSpace(p.Version); v != "" {
 			fmt.Fprintf(w, "codient %s\n", v)
+		}
+		if p.ContextWindowTokens > 0 {
+			fmt.Fprintf(w, "codient: context window %d tokens\n", p.ContextWindowTokens)
+		}
+		if em := strings.TrimSpace(p.EmbeddingModel); em != "" {
+			fmt.Fprintf(w, "codient: embeddings %s\n", em)
 		}
 		if resumeSummary != "" {
 			fmt.Fprintf(w, "codient: resuming · %s\n", resumeSummary)
@@ -116,14 +126,18 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 		run = "Session"
 	}
 	const (
-		labelVersion   = "Version "
-		labelWorkspace = "Workspace "
-		labelModel     = "Model "
+		labelVersion    = "Version "
+		labelWorkspace  = "Workspace "
+		labelModel      = "Model "
+		labelContext    = "Context "
+		labelEmbeddings = "Embeddings "
 	)
 	wsVal := strings.TrimSpace(p.Workspace)
 	modelVal := strings.TrimSpace(p.Model)
 	wsLine := welcomeLabelLine(termWidth, labelWorkspace, wsVal)
 	modelLine := welcomeLabelLine(termWidth, labelModel, modelVal)
+	ctxLine := welcomeLabelLine(termWidth, labelContext, formatContextWindowValue(p.ContextWindowTokens))
+	embLine := welcomeLabelLine(termWidth, labelEmbeddings, formatEmbeddingsValue(p.EmbeddingModel))
 
 	if p.Plain || !stderrInteractive() {
 		for _, row := range codientBlockASCII {
@@ -140,6 +154,12 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 		}
 		if modelLine != "" {
 			fmt.Fprintf(w, "  %s\n", modelLine)
+		}
+		if ctxLine != "" {
+			fmt.Fprintf(w, "  %s\n", ctxLine)
+		}
+		if embLine != "" {
+			fmt.Fprintf(w, "  %s\n", embLine)
 		}
 		if resumeSummary != "" {
 			fmt.Fprintf(w, "  Resuming · %s\n", resumeSummary)
@@ -182,6 +202,12 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 	}
 	if modelLine != "" {
 		boxLines = append(boxLines, "  "+dim.Render(modelLine))
+	}
+	if ctxLine != "" {
+		boxLines = append(boxLines, "  "+dim.Render(ctxLine))
+	}
+	if embLine != "" {
+		boxLines = append(boxLines, "  "+dim.Render(embLine))
 	}
 	boxInner := strings.Join(boxLines, "\n")
 
@@ -261,6 +287,20 @@ func stderrInteractive() bool {
 	return err == nil && (st.Mode()&os.ModeCharDevice) != 0
 }
 
+func formatContextWindowValue(tokens int) string {
+	if tokens <= 0 {
+		return "unlimited"
+	}
+	return fmt.Sprintf("%d tokens", tokens)
+}
+
+func formatEmbeddingsValue(model string) string {
+	if strings.TrimSpace(model) == "" {
+		return "off"
+	}
+	return strings.TrimSpace(model)
+}
+
 // maxWelcomeValueRunes is the maximum length (runes) for the value in a
 // "  Label value" welcome line so it fits within the terminal and bordered box.
 func maxWelcomeValueRunes(termWidth int, label string) int {
@@ -274,6 +314,10 @@ func maxWelcomeValueRunes(termWidth int, label string) int {
 			return 46
 		case "Version":
 			return 72
+		case "Context":
+			return 46
+		case "Embeddings":
+			return 40
 		default:
 			return 46
 		}
