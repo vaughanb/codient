@@ -4,11 +4,23 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
+// tuiModeActive is set to true when the Bubble Tea TUI is running.
+// It disables raw-terminal features (spinners, cursor movement) whose escape
+// sequences would pollute the TUI viewport. Lipgloss styling in assistout is
+// handled separately via assistout.SetTUIOverride.
+var tuiModeActive atomic.Bool
+
 // stderrIsInteractive reports whether os.Stderr is a character device (TTY).
+// In TUI mode it returns false to suppress raw ANSI cursor/spinner sequences
+// that would appear as garbage in the viewport.
 func stderrIsInteractive() bool {
+	if tuiModeActive.Load() {
+		return false
+	}
 	st, err := os.Stderr.Stat()
 	if err != nil {
 		return false
@@ -55,19 +67,16 @@ func startWorkingSpinner(w io.Writer) (stop func()) {
 	return stop
 }
 
-// firstWriteStop forwards writes to w and invokes stop once on the first non-empty write.
-type firstWriteStop struct {
+// spinStopWriter forwards writes to w and calls stop on every non-empty write.
+// stop must be safe for concurrent and repeated calls.
+type spinStopWriter struct {
 	w    io.Writer
 	stop func()
-	once sync.Once
 }
 
-func (f *firstWriteStop) Write(p []byte) (int, error) {
+func (s *spinStopWriter) Write(p []byte) (int, error) {
 	if len(p) > 0 {
-		f.once.Do(f.stop)
+		s.stop()
 	}
-	if f.w == nil {
-		return len(p), nil
-	}
-	return f.w.Write(p)
+	return s.w.Write(p)
 }

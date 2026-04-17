@@ -102,12 +102,23 @@ func (u Usage) HasAny() bool {
 
 // FormatLine formats a single-line token summary for progress output.
 func FormatLine(u Usage) string {
+	return FormatLineCtx(u, 0)
+}
+
+// FormatLineCtx formats a single-line token summary including context usage
+// percentage when contextWindow > 0.
+func FormatLineCtx(u Usage, contextWindow int) string {
 	if !u.HasAny() {
 		return ""
 	}
-	return fmt.Sprintf("tokens: %s in / %s out",
+	s := fmt.Sprintf("tokens: %s in / %s out",
 		formatTokenCount(u.PromptTokens),
 		formatTokenCount(u.CompletionTokens))
+	if contextWindow > 0 && u.PromptTokens > 0 {
+		pct := float64(u.PromptTokens) / float64(contextWindow) * 100
+		s += fmt.Sprintf(" (%d%% ctx)", int(pct))
+	}
+	return s
 }
 
 // FormatTurnSummary formats a turn footer line including optional estimated cost.

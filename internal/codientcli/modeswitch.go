@@ -33,7 +33,7 @@ func (s *session) switchMode(newMode prompt.Mode) {
 		spinner = startModelSpinner(os.Stderr, s.cfg.Model)
 	}
 
-	s.mode = newMode
+	s.setMode(newMode)
 	s.client = openaiclient.New(s.cfg)
 	s.registry = buildRegistry(s.cfg, newMode, s, s.memOpts)
 	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, newMode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))

@@ -171,7 +171,7 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 	// Gemini-style cool → warm sweep; endpoints tuned per background.
 	titleFrom, titleTo := "#0369A1", "#BE185D"
 	ruleFrom, ruleTo := "#0284C7", "#C026D3"
-	if lipgloss.HasDarkBackground() {
+	if IsDarkBackground() {
 		titleFrom, titleTo = "#38BDF8", "#F472B6"
 		ruleFrom, ruleTo = "#38BDF8", "#E879F9"
 	}
@@ -231,6 +231,9 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 }
 
 func stderrTerminalWidth() int {
+	if o := tuiOverride.Load(); o != nil {
+		return o.TermWidth
+	}
 	fd := int(os.Stderr.Fd())
 	if !term.IsTerminal(fd) {
 		return 0
@@ -283,6 +286,9 @@ func truncateWelcomeTail(s string, max int) string {
 }
 
 func stderrInteractive() bool {
+	if o := tuiOverride.Load(); o != nil {
+		return o.StderrInteractive
+	}
 	st, err := os.Stderr.Stat()
 	return err == nil && (st.Mode()&os.ModeCharDevice) != 0
 }

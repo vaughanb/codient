@@ -1,5 +1,10 @@
 # codient
 
+[![CI](https://github.com/vaughanb/codient/actions/workflows/ci.yml/badge.svg)](https://github.com/vaughanb/codient/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-informational)](https://github.com/vaughanb/codient/blob/main/LICENSE)
+[![Go version](https://img.shields.io/github/go-mod/go-version/vaughanb/codient/main?label=Go&logo=go)](https://github.com/vaughanb/codient/blob/main/go.mod)
+[![Latest release](https://img.shields.io/github/v/release/vaughanb/codient?label=release&logo=github)](https://github.com/vaughanb/codient/releases/latest)
+
 **codient** is a command-line agent for any **OpenAI-compatible** chat API (local server, cloud provider, etc.). It runs multi-step tool use against your workspace—read and search files, run allowlisted commands, optional HTTPS fetch and web search, and write access in **build** mode. **Ask** and **plan** modes use a read-only tool set and different system prompts: ask for exploration, plan for structured implementation plans with clarifying questions.
 
 When the API returns usage metadata, codient aggregates **prompt and completion tokens** per session and shows **estimated cost** using a built-in pricing table or your `cost_per_mtok` override. See [Token usage and cost estimates](#token-usage-and-cost-estimates).
@@ -129,6 +134,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `context_reserve` | Tokens reserved for the assistant reply | `4096` |
 | **LLM** | | |
 | `max_llm_retries` | Retries for transient LLM errors | `2` |
+| `max_completion_seconds` | Per-completion timeout (max 3600) | `300` |
 | `stream_with_tools` | Stream completions when tools are enabled | `false` |
 | **Fetch** | | |
 | `fetch_allow_hosts` | Comma-separated hostnames for `fetch_url` (subdomains match) | *(empty)* |
@@ -349,6 +355,20 @@ codient -workspace /path/to/repo
 codient -image ./screenshot.png -prompt "What error is this?"
 codient -image a.png,b.png -prompt "Compare these mockups"
 ```
+
+### Split-screen TUI
+
+When stdin is a TTY and `-plain` is **not** set, codient launches a Bubble Tea split-screen interface: a scrollable output viewport on top and a fixed input line at the bottom. This keeps the user's typing completely separate from agent output — background events like the semantic index completion will never corrupt the input line.
+
+| Area | Behaviour |
+|------|-----------|
+| **Viewport** (top) | Shows the full session: welcome banner, agent replies, tool progress, status messages. |
+| **Status bar** | Displays "Agent is working…" during turns; a plain separator otherwise. |
+| **Input line** (bottom) | Styled `[mode] > ` prompt. Type freely while the agent is streaming. Press **Enter** to submit, **Ctrl+C** to quit. |
+
+**Scrolling:** **Up/Down** arrows scroll one line, **Alt+Up/Down** scroll three lines, **Page Up/Down** scroll half a page, and **Home/End** jump to the top or bottom.
+
+The TUI uses the alternate screen buffer; when you exit, the terminal returns to its previous state. Pass **`-plain`** or pipe stdin to fall back to the classic inline REPL.
 
 ### Headless / CI mode (`-print`)
 

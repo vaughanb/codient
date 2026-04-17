@@ -316,6 +316,63 @@ func Run() int {
 		// Override the timeout context with a signal-based one for the REPL.
 		// The session can last indefinitely; only Ctrl+C should cancel it.
 		cancel()
+
+		if stdinIsTTY && !cfg.Plain {
+			// In TUI mode, Bubble Tea owns signal handling (Ctrl+C → KeyCtrlC).
+			// Use a manually cancellable context instead of signal.NotifyContext
+			// to avoid conflicts with Bubble Tea's input reading.
+			tuiCtx, tuiCancel := context.WithCancel(context.Background())
+			defer tuiCancel()
+
+			ts, err := initTUI(string(agentMode), cfg.Plain)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "tui: %v\n", err)
+				replCtx, replCancel := signal.NotifyContext(context.Background(), os.Interrupt)
+				defer replCancel()
+				return s.runSession(replCtx, *promptFlag, *newSession)
+			}
+			s.tui = ts
+			// Re-resolve progressOut now that os.Stderr points to the TUI pipe.
+			// The original resolveProgressOut captured the real stderr fd before
+			// initTUI redirected it, so the session's progress writer must be
+			// updated to write through the pipe into the viewport.
+			if s.progressOut != nil {
+				s.progressOut = os.Stderr
+			}
+			ts.startPipeReaders()
+			go func() {
+				defer close(ts.done)
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Fprintf(ts.origErr, "codient: session panic: %v\n", r)
+						ts.exitCode = 1
+					}
+				}()
+				ts.exitCode = s.runSession(tuiCtx, *promptFlag, *newSession)
+				// Session finished normally — close write-ends so pipe readers
+				// see EOF, then tell the TUI to quit.
+				ts.stdoutW.Close()
+				ts.stderrW.Close()
+				ts.prog.Send(tuiQuitMsg{exitCode: ts.exitCode})
+			}()
+			if _, err := ts.prog.Run(); err != nil {
+				tuiCancel()
+				ts.input.Close() // unblock chanReader so session goroutine exits
+				<-ts.done
+				ts.cleanup()
+				fmt.Fprintf(ts.origErr, "tui: %v\n", err)
+				return 1
+			}
+			// TUI exited (user pressed Ctrl+C or session sent quit).
+			// Cancel the session context and close input to unblock the goroutine.
+			tuiCancel()
+			ts.input.Close()
+			<-ts.done
+			code := ts.exitCode
+			ts.cleanup()
+			return code
+		}
+
 		replCtx, replCancel := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer replCancel()
 		return s.runSession(replCtx, *promptFlag, *newSession)

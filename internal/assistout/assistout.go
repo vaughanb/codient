@@ -6,13 +6,53 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
 )
 
+// tuiOverride, when non-nil, replaces live os.Stdout/os.Stderr TTY checks
+// with cached values so that the Bubble Tea TUI (which redirects the file
+// descriptors to pipes) still gets correct styling and word-wrap behaviour.
+var tuiOverride atomic.Pointer[tuiOverrideValues]
+
+type tuiOverrideValues struct {
+	StdoutInteractive bool
+	StderrInteractive bool
+	TermWidth         int
+	DarkBackground    bool
+}
+
+// SetTUIOverride installs cached TTY values for the lifetime of the TUI.
+// Pass nil to clear the override (e.g. on TUI shutdown).
+func SetTUIOverride(v *tuiOverrideValues) { tuiOverride.Store(v) }
+
+// NewTUIOverrideValues constructs a tuiOverrideValues (exported for codientcli).
+func NewTUIOverrideValues(stdoutTTY, stderrTTY bool, width int, darkBg bool) *tuiOverrideValues {
+	return &tuiOverrideValues{
+		StdoutInteractive: stdoutTTY,
+		StderrInteractive: stderrTTY,
+		TermWidth:         width,
+		DarkBackground:    darkBg,
+	}
+}
+
+// IsDarkBackground reports whether the terminal has a dark background.
+// Uses the cached value in TUI mode (since the real fds are pipes).
+func IsDarkBackground() bool {
+	if o := tuiOverride.Load(); o != nil {
+		return o.DarkBackground
+	}
+	return lipgloss.HasDarkBackground()
+}
+
 // StdoutIsInteractive reports whether os.Stdout is a character device (TTY).
 func StdoutIsInteractive() bool {
+	if o := tuiOverride.Load(); o != nil {
+		return o.StdoutInteractive
+	}
 	st, err := os.Stdout.Stat()
 	if err != nil {
 		return false
@@ -23,6 +63,12 @@ func StdoutIsInteractive() bool {
 // terminalWordWrap returns a reasonable wrap width for glamour (defaults 80).
 func terminalWordWrap() int {
 	const defaultW = 80
+	if o := tuiOverride.Load(); o != nil {
+		if o.TermWidth >= 20 {
+			return o.TermWidth
+		}
+		return defaultW
+	}
 	fd := int(os.Stdout.Fd())
 	if !term.IsTerminal(fd) {
 		return defaultW

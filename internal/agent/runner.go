@@ -92,6 +92,9 @@ type Runner struct {
 	EstimateSessionCost EstimateSessionCostFn
 	// Hooks runs lifecycle hooks (PreToolUse, PostToolUse, Stop); nil disables.
 	Hooks *hooks.Manager
+	// OnWorkingChange is called with true when the runner begins waiting for an
+	// LLM response and false when the response arrives. Used to drive spinners.
+	OnWorkingChange func(working bool)
 	// StopHookActive is true when the next assistant text follows a Stop-hook continuation in this RunConversation.
 	StopHookActive bool
 	toolUseSeq     atomic.Uint64
@@ -154,8 +157,14 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			params.ParallelToolCalls = openai.Bool(true)
 		}
 
+		if r.OnWorkingChange != nil {
+			r.OnWorkingChange(true)
+		}
 		t0 := time.Now()
 		res, wasStreamed, err := r.callLLMWithRetry(ctx, params, streamTo)
+		if r.OnWorkingChange != nil {
+			r.OnWorkingChange(false)
+		}
 		if wasStreamed {
 			streamedFinal = true
 		}
@@ -292,7 +301,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 						consecutiveToolFails = 0
 					}
 					if r.Progress != nil && len(toolParts) > 0 {
-						suf := roundUsageSuffix(res)
+						suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
 						fmt.Fprintf(r.Progress, "%sllm %s  ·  %s%s\n", progressNestedIndent, formatProgressDur(llmDur), strings.Join(toolParts, " · "), suf)
 					}
 					if consecutiveToolFails >= maxConsecutiveToolFails && r.Progress != nil {
@@ -303,7 +312,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			}
 
 			if r.Progress != nil {
-				suf := roundUsageSuffix(res)
+				suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
 				fmt.Fprintf(r.Progress, "%sllm %s  ·  reply%s\n", progressNestedIndent, formatProgressDur(llmDur), suf)
 			}
 			if msg.Content != "" {
@@ -466,7 +475,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			consecutiveToolFails = 0
 		}
 		if r.Progress != nil && len(toolParts) > 0 {
-			suf := roundUsageSuffix(res)
+			suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
 			fmt.Fprintf(r.Progress, "%sllm %s  ·  %s%s\n", progressNestedIndent, formatProgressDur(llmDur), strings.Join(toolParts, " · "), suf)
 		}
 		if consecutiveToolFails >= maxConsecutiveToolFails && r.Progress != nil {
@@ -553,7 +562,7 @@ func logUsageFromCompletion(u openai.CompletionUsage) *agentlog.TokenUsage {
 	}
 }
 
-func roundUsageSuffix(res *openai.ChatCompletion) string {
+func roundUsageSuffix(res *openai.ChatCompletion, contextWindow int) string {
 	if res == nil {
 		return ""
 	}
@@ -561,7 +570,7 @@ func roundUsageSuffix(res *openai.ChatCompletion) string {
 	if !u.HasAny() {
 		return ""
 	}
-	return " · " + tokentracker.FormatLine(u)
+	return " · " + tokentracker.FormatLineCtx(u, contextWindow)
 }
 
 func parseExitCodeFromRunOutput(s string) string {

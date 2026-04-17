@@ -15,6 +15,9 @@ var modeColors = map[string]lipgloss.AdaptiveColor{
 }
 
 func stderrIsInteractive() bool {
+	if o := tuiOverride.Load(); o != nil {
+		return o.StderrInteractive
+	}
 	st, err := os.Stderr.Stat()
 	if err != nil {
 		return false

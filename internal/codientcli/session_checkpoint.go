@@ -220,7 +220,7 @@ func (s *session) rollbackToCheckpoint(cp *checkpoint.Checkpoint) error {
 	if m, err := prompt.ParseMode(cp.Mode); err == nil {
 		mode = m
 	}
-	s.mode = mode
+	s.setMode(mode)
 	s.client = openaiclient.New(s.cfg)
 	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
 	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))

@@ -91,6 +91,11 @@ type session struct {
 	// replSkipFirstLoopPrompt is set when replAsyncStderrNote redraws the prompt before the first
 	// readUserInput; the first loop iteration skips a duplicate "\n" + prompt pair.
 	replSkipFirstLoopPrompt bool
+	// replInputActive is true while the REPL is blocking on readUserInput. When set,
+	// replAsyncStderrNote defers messages to pendingAsyncNotes instead of printing
+	// immediately, avoiding visual corruption of the user's input line.
+	replInputActive    bool
+	pendingAsyncNotes []string
 
 	codeIndex *codeindex.Index // semantic search index; nil when embedding_model is not configured
 
@@ -120,6 +125,11 @@ type session struct {
 
 	// hooksMgr is loaded when hooks_enabled is true; nil otherwise.
 	hooksMgr *hooks.Manager
+
+	// tui is non-nil when the Bubble Tea split-screen TUI is active.
+	// All stdout/stderr writes go through pipes into the TUI viewport,
+	// and user input arrives through tui.inputCh instead of os.Stdin.
+	tui *tuiSetup
 }
 
 type undoEntry struct {
@@ -127,6 +137,15 @@ type undoEntry struct {
 	createdFiles  []string // untracked files created during this turn (delete)
 	historyLen    int      // len(s.history) before this turn started
 	commitSHA     string   // non-empty when git_auto_commit recorded this turn as a commit
+}
+
+// setMode updates the session mode and notifies the TUI if active.
+// All mode assignments should go through this method to keep the TUI in sync.
+func (s *session) setMode(m prompt.Mode) {
+	s.mode = m
+	if s.tui != nil {
+		s.tui.prog.Send(tuiModeMsg(string(m)))
+	}
 }
 
 func (s *session) newRunner() *agent.Runner {
@@ -215,24 +234,49 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user op
 	}
 	streamTo := streamWriterForTurn(s.streamReply, stdoutTTY, s.mode, s.richOutput, s.lastReply)
 
-	stopSpin := startWorkingSpinner(os.Stderr)
-	var stopOnce sync.Once
-	doStop := func() { stopOnce.Do(stopSpin) }
-	defer doStop()
+	var spinMu sync.Mutex
+	var curStopSpin func()
 
-	prevProg := runner.Progress
-	var gateProg io.Writer
-	if prevProg != nil {
-		wrapped := &firstWriteStop{w: prevProg, stop: doStop}
-		runner.Progress = wrapped
-		gateProg = wrapped
-		defer func() { runner.Progress = prevProg }()
+	startSpin := func() {
+		spinMu.Lock()
+		defer spinMu.Unlock()
+		if curStopSpin != nil {
+			curStopSpin()
+		}
+		if s.tui != nil {
+			s.tui.prog.Send(tuiWorkingMsg(true))
+		}
+		curStopSpin = startWorkingSpinner(os.Stderr)
 	}
+	stopSpinFn := func() {
+		spinMu.Lock()
+		defer spinMu.Unlock()
+		if curStopSpin != nil {
+			curStopSpin()
+			curStopSpin = nil
+		}
+		if s.tui != nil {
+			s.tui.prog.Send(tuiWorkingMsg(false))
+		}
+	}
+
+	startSpin()
+	defer stopSpinFn()
+
+	runner.OnWorkingChange = func(working bool) {
+		if working {
+			startSpin()
+		} else {
+			stopSpinFn()
+		}
+	}
+	defer func() { runner.OnWorkingChange = nil }()
+
 	if s.mode == prompt.ModeAsk {
-		runner.PostReplyCheck = makePostReplyCheck(s, gateProg)
+		runner.PostReplyCheck = makePostReplyCheck(s, runner.Progress)
 	}
 	if streamTo != nil {
-		streamTo = &firstWriteStop{w: streamTo, stop: doStop}
+		streamTo = &spinStopWriter{w: streamTo, stop: stopSpinFn}
 	}
 
 	reply, newHist, streamed, runErr := runner.RunConversation(ctx, s.systemPrompt, s.history, user, streamTo)
@@ -644,7 +688,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 				s.sessionID = existing.ID
 				mode, modeErr := prompt.ParseMode(existing.Mode)
 				if modeErr == nil && mode != s.mode {
-					s.mode = mode
+					s.setMode(mode)
 					s.registry = buildRegistry(s.cfg, mode, s, s.memOpts)
 					s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 				}
@@ -690,10 +734,15 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	s.captureGitSessionState(ws)
 	s.warnIfNotGitRepo()
 
-	sc := bufio.NewScanner(os.Stdin)
+	var sc *bufio.Scanner
+	if s.tui != nil {
+		sc = bufio.NewScanner(&chanReader{ch: s.tui.input.ch})
+	} else {
+		sc = bufio.NewScanner(os.Stdin)
+		enableBracketedPaste()
+		defer disableBracketedPaste()
+	}
 	s.scanner = sc
-	enableBracketedPaste()
-	defer disableBracketedPaste()
 	resolveAstGrep(s.cfg, sc)
 	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
 	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
@@ -792,11 +841,20 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	done := false
 	firstReplTurn := true
 	for !done {
-		s.replPrintPromptForTurn(firstReplTurn)
+		if s.tui == nil {
+			s.replPrintPromptForTurn(firstReplTurn)
+			s.replSetInputActive()
+		}
 		firstReplTurn = false
 		line, ok := readUserInput(sc)
+		if s.tui == nil {
+			s.replFlushPendingNotes()
+		}
 		if !ok {
 			break
+		}
+		if s.tui != nil && line != "" {
+			fmt.Fprintf(os.Stderr, "\n%s%s\n", assistout.SessionPrompt(s.cfg.Plain, string(s.mode)), line)
 		}
 		if line == "" {
 			continue
@@ -892,13 +950,27 @@ func (s *session) replPrintPromptForTurn(isFirstTurn bool) {
 }
 
 // replAsyncStderrNote prints a full line (or lines) to stderr while the REPL may be showing
-// a prompt without a trailing newline. It moves to a new line, prints msg, then redraws the prompt.
+// a prompt without a trailing newline. When the REPL is blocking on user input
+// (replInputActive), the message is deferred to avoid corrupting the input line;
+// otherwise it moves to a new line, prints msg, then redraws the prompt.
 func (s *session) replAsyncStderrNote(msg string) {
 	if msg == "" {
 		return
 	}
+	// In TUI mode the viewport handles display; just print the message.
+	if s.tui != nil {
+		fmt.Fprint(os.Stderr, msg)
+		if !strings.HasSuffix(msg, "\n") {
+			fmt.Fprint(os.Stderr, "\n")
+		}
+		return
+	}
 	s.replPromptMu.Lock()
 	defer s.replPromptMu.Unlock()
+	if s.replInputActive {
+		s.pendingAsyncNotes = append(s.pendingAsyncNotes, msg)
+		return
+	}
 	fmt.Fprint(os.Stderr, "\n")
 	fmt.Fprint(os.Stderr, msg)
 	if !strings.HasSuffix(msg, "\n") {
@@ -906,6 +978,30 @@ func (s *session) replAsyncStderrNote(msg string) {
 	}
 	s.writeREPLPromptUnlocked()
 	s.replSkipFirstLoopPrompt = true
+}
+
+// replSetInputActive marks the REPL as blocking on stdin so that async notes
+// are deferred rather than printed immediately.
+func (s *session) replSetInputActive() {
+	s.replPromptMu.Lock()
+	s.replInputActive = true
+	s.replPromptMu.Unlock()
+}
+
+// replFlushPendingNotes clears the input-active flag and prints any async notes
+// that were deferred while the user was typing. Safe to call even when no notes
+// are pending.
+func (s *session) replFlushPendingNotes() {
+	s.replPromptMu.Lock()
+	defer s.replPromptMu.Unlock()
+	s.replInputActive = false
+	for _, msg := range s.pendingAsyncNotes {
+		fmt.Fprint(os.Stderr, msg)
+		if !strings.HasSuffix(msg, "\n") {
+			fmt.Fprint(os.Stderr, "\n")
+		}
+	}
+	s.pendingAsyncNotes = nil
 }
 
 // offerPlanHandoff prompts the user with a structured approval dialog after a plan

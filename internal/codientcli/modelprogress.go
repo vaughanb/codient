@@ -19,7 +19,7 @@ type modelSpinner struct {
 }
 
 func startModelSpinner(w io.Writer, modelName string) *modelSpinner {
-	if w == nil {
+	if w == nil || !stderrIsInteractive() {
 		return &modelSpinner{stopCh: make(chan struct{})}
 	}
 	s := &modelSpinner{
