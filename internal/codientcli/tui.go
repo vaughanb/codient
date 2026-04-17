@@ -130,12 +130,12 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 			return m, tea.Quit
 		case tea.KeyPgUp:
 			if m.ready {
-				m.viewport.HalfViewUp()
+				m.viewport.HalfPageUp()
 			}
 			return m, nil
 		case tea.KeyPgDown:
 			if m.ready {
-				m.viewport.HalfViewDown()
+				m.viewport.HalfPageDown()
 			}
 			return m, nil
 		case tea.KeyUp:
@@ -144,7 +144,7 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 				if !msg.Alt {
 					n = 1
 				}
-				m.viewport.LineUp(n)
+				m.viewport.ScrollUp(n)
 			}
 			return m, nil
 		case tea.KeyDown:
@@ -153,7 +153,7 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 				if !msg.Alt {
 					n = 1
 				}
-				m.viewport.LineDown(n)
+				m.viewport.ScrollDown(n)
 			}
 			return m, nil
 		case tea.KeyHome:
