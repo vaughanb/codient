@@ -1,12 +1,36 @@
 package codientcli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"codient/internal/config"
 )
+
+func TestRunVerificationCmd_ScrubsEnv(t *testing.T) {
+	const leak = "secret-token-must-not-appear-in-child"
+	t.Setenv("GITHUB_TOKEN", leak)
+	dir := t.TempDir()
+	cfg := &config.Config{SandboxMode: "off"}
+	var cmd string
+	if runtime.GOOS == "windows" {
+		cmd = `echo %GITHUB_TOKEN%`
+	} else {
+		cmd = `printf '%s' "$GITHUB_TOKEN"`
+	}
+	r := runVerificationCmd(context.Background(), cfg, dir, "t", cmd, 10000, nil)
+	if !r.Passed {
+		t.Fatalf("expected success, got exit %d output %q", r.ExitCode, r.Output)
+	}
+	if strings.Contains(r.Output, leak) {
+		t.Fatalf("GITHUB_TOKEN leaked into verification subprocess output")
+	}
+}
 
 func TestDetectTestCmd_Go(t *testing.T) {
 	dir := t.TempDir()

@@ -2,18 +2,20 @@ package codientcli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/openai/openai-go/v3"
 
+	"codient/internal/config"
 	"codient/internal/planstore"
+	"codient/internal/sandbox"
 	"codient/internal/tools"
 )
 
@@ -44,17 +46,17 @@ func (s *session) runVerification(ctx context.Context, sc *bufio.Scanner, plan *
 	var results []VerificationResult
 
 	if cmd := effectiveAutoCheckCmd(s.cfg); cmd != "" {
-		r := runVerificationCmd(ctx, ws, "build", cmd, s.cfg.ExecMaxOutputBytes, s.progressOut)
+		r := runVerificationCmd(ctx, s.cfg, ws, "build", cmd, s.cfg.ExecMaxOutputBytes, s.progressOut)
 		results = append(results, r)
 	}
 
 	if cmd := effectiveLintCmd(s.cfg); cmd != "" {
-		r := runVerificationCmd(ctx, ws, "lint", cmd, s.cfg.ExecMaxOutputBytes, s.progressOut)
+		r := runVerificationCmd(ctx, s.cfg, ws, "lint", cmd, s.cfg.ExecMaxOutputBytes, s.progressOut)
 		results = append(results, r)
 	}
 
 	if cmd := effectiveTestCmd(s.cfg); cmd != "" {
-		r := runVerificationCmd(ctx, ws, "test", cmd, s.cfg.ExecMaxOutputBytes, s.progressOut)
+		r := runVerificationCmd(ctx, s.cfg, ws, "test", cmd, s.cfg.ExecMaxOutputBytes, s.progressOut)
 		results = append(results, r)
 	}
 
@@ -125,7 +127,7 @@ func (s *session) runVerification(ctx context.Context, sc *bufio.Scanner, plan *
 
 const verificationTimeoutSec = 120
 
-func runVerificationCmd(ctx context.Context, workspace, label, cmdLine string, maxOut int, progress io.Writer) VerificationResult {
+func runVerificationCmd(ctx context.Context, cfg *config.Config, workspace, label, cmdLine string, maxOut int, progress io.Writer) VerificationResult {
 	if progress != nil {
 		fmt.Fprintf(progress, "verification: running %s (%s)...\n", label, cmdLine)
 	}
@@ -145,39 +147,46 @@ func runVerificationCmd(ctx context.Context, workspace, label, cmdLine string, m
 			Passed:   false,
 		}
 	}
-	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
-	cmd.Dir = workspace
+	runner := sandbox.SelectRunner(cfg.SandboxMode, sandbox.SelectOptions{ContainerImage: cfg.SandboxContainerImage})
+	wsAbs, err := filepath.Abs(workspace)
+	if err != nil {
+		wsAbs = workspace
+	}
+	pol := sandbox.Policy{
+		ReadWritePaths: []string{wsAbs},
+		ReadOnlyPaths:  append([]string(nil), cfg.SandboxReadOnlyPaths...),
+		EnvPassthrough: cfg.ExecEnvPassthrough,
+	}
+	env := sandbox.ScrubEnv(os.Environ(), cfg.ExecEnvPassthrough)
+	timeout := time.Duration(verificationTimeoutSec) * time.Second
 
 	var out []byte
+	var exitCode int
 	if progress != nil {
 		ls := tools.NewLineStreamer(progress)
-		cmd.Stdout = ls
-		cmd.Stderr = ls
-		err = cmd.Run()
+		exitCode, err = runner.Exec(runCtx, pol, workspace, argv, env, timeout, ls, ls)
 		ls.Flush()
 		out = ls.Bytes()
 	} else {
-		out, err = cmd.CombinedOutput()
+		var buf bytes.Buffer
+		exitCode, err = runner.Exec(runCtx, pol, workspace, argv, env, timeout, &buf, &buf)
+		out = buf.Bytes()
 	}
 
 	dur := time.Since(t0)
-	exitCode := 0
 	passed := true
 	if err != nil {
-		passed = false
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			exitCode = ee.ExitCode()
-		} else {
-			return VerificationResult{
-				Label:    label,
-				Command:  cmdLine,
-				ExitCode: -1,
-				Output:   fmt.Sprintf("spawn error: %v", err),
-				Duration: dur,
-				Passed:   false,
-			}
+		return VerificationResult{
+			Label:    label,
+			Command:  cmdLine,
+			ExitCode: -1,
+			Output:   fmt.Sprintf("sandbox exec error: %v", err),
+			Duration: dur,
+			Passed:   false,
 		}
+	}
+	if exitCode != 0 {
+		passed = false
 	}
 
 	body := string(out)

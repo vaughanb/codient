@@ -3,7 +3,6 @@ package tools
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"codient/internal/sandbox"
 )
 
 // ExecPromptChoice is the user's response when a command is not on the session allowlist.
@@ -39,6 +40,14 @@ type ExecOptions struct {
 	// PromptOnDenied is called when a command is not allowlisted. If nil, denial is a hard error.
 	PromptOnDenied func(ctx context.Context, deniedKey string, argv []string) ExecPromptChoice
 	promptMu       sync.Mutex
+	// EnvPassthrough lists extra environment variable names forwarded to subprocesses (after scrubbing).
+	EnvPassthrough []string
+	// SandboxReadOnlyPaths are extra read-only paths for native/container sandboxes.
+	SandboxReadOnlyPaths []string
+	// SandboxRunner executes the subprocess; nil means sandbox.NoopRunner (env scrub only).
+	SandboxRunner sandbox.Runner
+	// WorkspaceRoot is the configured workspace root (for sandbox policy). Empty uses workDir only.
+	WorkspaceRoot string
 }
 
 // LineStreamer is an io.Writer that captures all bytes into an internal buffer
@@ -244,47 +253,36 @@ func runCommandWithSession(ctx context.Context, opt *ExecOptions, workspaceRoot,
 	if err != nil {
 		return "", err
 	}
-	return executeSubprocess(ctx, workDir, look, argv, timeout, maxOut, opt.ProgressWriter)
+	return executeSubprocess(ctx, opt, workspaceRoot, workDir, look, argv, timeout, maxOut, opt.ProgressWriter)
 }
 
-func executeSubprocess(ctx context.Context, workDir, look string, argv []string, timeout time.Duration, maxOut int, progress io.Writer) (string, error) {
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
+func executeSubprocess(ctx context.Context, opt *ExecOptions, workspaceRoot, workDir, look string, argv []string, timeout time.Duration, maxOut int, progress io.Writer) (string, error) {
+	runner := sandbox.Runner(sandbox.NoopRunner{})
+	if opt != nil && opt.SandboxRunner != nil {
+		runner = opt.SandboxRunner
 	}
-
-	cmd := exec.CommandContext(runCtx, look, argv[1:]...)
-	cmd.Dir = workDir
-	cmd.Env = execEnv()
+	env := execEnv(opt)
+	pol := execPolicy(opt, workspaceRoot, workDir)
+	fullArgv := append([]string{look}, argv[1:]...)
 
 	var out []byte
-	var err error
+	var exitCode int
 	if progress != nil {
 		ls := NewLineStreamer(progress)
-		cmd.Stdout = ls
-		cmd.Stderr = ls
-		err = cmd.Run()
+		var runErr error
+		exitCode, runErr = runner.Exec(ctx, pol, workDir, fullArgv, env, timeout, ls, ls)
 		ls.Flush()
 		out = ls.Bytes()
+		if runErr != nil {
+			return "", runErr
+		}
 	} else {
-		out, err = cmd.CombinedOutput()
-	}
-
-	exitCode := 0
-	if err != nil {
-		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			return "", fmt.Errorf("command timed out after %v", timeout)
-		}
-		if errors.Is(runCtx.Err(), context.Canceled) {
-			return "", runCtx.Err()
-		}
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			exitCode = ee.ExitCode()
-		} else {
-			return "", fmt.Errorf("run %v: %w", argv, err)
+		var buf bytes.Buffer
+		var runErr error
+		exitCode, runErr = runner.Exec(ctx, pol, workDir, fullArgv, env, timeout, &buf, &buf)
+		out = buf.Bytes()
+		if runErr != nil {
+			return "", runErr
 		}
 	}
 
@@ -303,7 +301,28 @@ func executeSubprocess(ctx context.Context, workDir, look string, argv []string,
 	return b.String(), nil
 }
 
-func runCommand(ctx context.Context, workspaceRoot, cwdRel string, argv []string, allow map[string]struct{}, timeout time.Duration, maxOut int, progress io.Writer) (string, error) {
+func execPolicy(opt *ExecOptions, workspaceRoot, workDir string) sandbox.Policy {
+	p := sandbox.Policy{}
+	if opt != nil {
+		p.EnvPassthrough = opt.EnvPassthrough
+		p.ReadOnlyPaths = append([]string(nil), opt.SandboxReadOnlyPaths...)
+	}
+	ws := workspaceRoot
+	if strings.TrimSpace(ws) == "" {
+		ws = workDir
+	}
+	if aw, err := filepath.Abs(ws); err == nil {
+		p.ReadWritePaths = append(p.ReadWritePaths, aw)
+	}
+	if wd, err := filepath.Abs(workDir); err == nil {
+		if len(p.ReadWritePaths) == 0 || p.ReadWritePaths[len(p.ReadWritePaths)-1] != wd {
+			p.ReadWritePaths = append(p.ReadWritePaths, wd)
+		}
+	}
+	return p
+}
+
+func runCommand(ctx context.Context, workspaceRoot, cwdRel string, argv []string, allow map[string]struct{}, opt *ExecOptions, timeout time.Duration, maxOut int, progress io.Writer) (string, error) {
 	if len(argv) == 0 {
 		return "", fmt.Errorf("argv must be non-empty")
 	}
@@ -339,11 +358,15 @@ func runCommand(ctx context.Context, workspaceRoot, cwdRel string, argv []string
 		}
 	}
 
-	return executeSubprocess(ctx, workDir, look, argv, timeout, maxOut, progress)
+	return executeSubprocess(ctx, opt, workspaceRoot, workDir, look, argv, timeout, maxOut, progress)
 }
 
-func execEnv() []string {
-	return append([]string{}, osEnviron()...)
+func execEnv(opt *ExecOptions) []string {
+	pt := []string(nil)
+	if opt != nil {
+		pt = opt.EnvPassthrough
+	}
+	return sandbox.ScrubEnv(osEnviron(), pt)
 }
 
 // osEnviron exists for tests to stub.

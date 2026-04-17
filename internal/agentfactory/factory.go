@@ -10,6 +10,7 @@ import (
 
 	"codient/internal/config"
 	"codient/internal/projectinfo"
+	"codient/internal/sandbox"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
 	"codient/internal/tools"
@@ -33,9 +34,15 @@ func RegistryForMode(cfg *config.Config, mode prompt.Mode, rm *repomap.Map) *too
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
 			execOpts = &tools.ExecOptions{
-				TimeoutSeconds: cfg.ExecTimeoutSeconds,
-				MaxOutputBytes: cfg.ExecMaxOutputBytes,
-				Allowlist:      cfg.ExecAllowlist,
+				TimeoutSeconds:       cfg.ExecTimeoutSeconds,
+				MaxOutputBytes:       cfg.ExecMaxOutputBytes,
+				Allowlist:            cfg.ExecAllowlist,
+				EnvPassthrough:       append([]string(nil), cfg.ExecEnvPassthrough...),
+				SandboxReadOnlyPaths: append([]string(nil), cfg.SandboxReadOnlyPaths...),
+				WorkspaceRoot:        cfg.EffectiveWorkspace(),
+				SandboxRunner: sandbox.SelectRunner(cfg.SandboxMode, sandbox.SelectOptions{
+					ContainerImage: cfg.SandboxContainerImage,
+				}),
 			}
 		}
 		stateDir, _ := config.StateDir()

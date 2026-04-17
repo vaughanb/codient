@@ -15,6 +15,8 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/shared"
 
+	"codient/internal/sandbox"
+
 	"codient/internal/agentlog"
 	"codient/internal/assistout"
 	"codient/internal/config"
@@ -32,6 +34,9 @@ import (
 
 // Run parses flags and executes the codient CLI. It returns a process exit code.
 func Run() int {
+	if sandbox.IsInternalSandboxExecChild(os.Args) {
+		return sandbox.RunInternalSandboxExec(os.Args[2])
+	}
 	var (
 		system        = flag.String("system", "", "optional system prompt (merged into default tool-capabilities prompt)")
 		promptFlag    = flag.String("prompt", "", "user message: without REPL, stdin is used if flag empty; with REPL, non-empty -prompt is the first turn")
@@ -59,6 +64,7 @@ func Run() int {
 		approveStr    = flag.String("auto-approve", "off", "with -print: off|exec|fetch|all (non-interactive approvals)")
 		maxTurns      = flag.Int("max-turns", 0, "max LLM rounds for one user turn (0=unlimited)")
 		maxCostUSD    = flag.Float64("max-cost", 0, "max estimated session USD (0=unlimited; needs pricing)")
+		sandboxFlag   = flag.String("sandbox", "", "subprocess sandbox: off|native|container|auto (overrides config)")
 	)
 	var (
 		printMode bool
@@ -119,6 +125,13 @@ func Run() int {
 	}
 	if explicit["design-save-dir"] {
 		cfg.DesignSaveDir = *designSaveDir
+	}
+	if explicit["sandbox"] {
+		cfg.SandboxMode = strings.TrimSpace(*sandboxFlag)
+	}
+	if err := config.ValidateSandbox(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return 2
 	}
 
 	agentMode, err := prompt.ParseMode(cfg.Mode)

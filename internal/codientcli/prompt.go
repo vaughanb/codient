@@ -3,6 +3,7 @@ package codientcli
 import (
 	"codient/internal/codeindex"
 	"codient/internal/config"
+	"codient/internal/sandbox"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
 	"codient/internal/tools"
@@ -60,8 +61,14 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
 			execOpts = &tools.ExecOptions{
-				TimeoutSeconds: cfg.ExecTimeoutSeconds,
-				MaxOutputBytes: cfg.ExecMaxOutputBytes,
+				TimeoutSeconds:       cfg.ExecTimeoutSeconds,
+				MaxOutputBytes:       cfg.ExecMaxOutputBytes,
+				EnvPassthrough:       append([]string(nil), cfg.ExecEnvPassthrough...),
+				SandboxReadOnlyPaths: append([]string(nil), cfg.SandboxReadOnlyPaths...),
+				WorkspaceRoot:        cfg.EffectiveWorkspace(),
+				SandboxRunner: sandbox.SelectRunner(cfg.SandboxMode, sandbox.SelectOptions{
+					ContainerImage: cfg.SandboxContainerImage,
+				}),
 			}
 			if s != nil {
 				execOpts.ProgressWriter = s.progressOut

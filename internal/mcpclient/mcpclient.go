@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"codient/internal/config"
+	"codient/internal/sandbox"
 	"codient/internal/tools"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -75,16 +76,30 @@ func (m *Manager) Connect(ctx context.Context, servers map[string]config.MCPServ
 	return warnings
 }
 
+func mergeMCPProcessEnv(extra map[string]string) []string {
+	m := make(map[string]string)
+	for _, e := range sandbox.ScrubOSEnviron(nil) {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		m[k] = v
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	out := make([]string, 0, len(m))
+	for k, v := range m {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
 func transportFor(cfg config.MCPServerConfig) (mcp.Transport, error) {
 	switch {
 	case cfg.Command != "":
 		cmd := exec.Command(cfg.Command, cfg.Args...)
-		if len(cfg.Env) > 0 {
-			cmd.Env = cmd.Environ()
-			for k, v := range cfg.Env {
-				cmd.Env = append(cmd.Env, k+"="+v)
-			}
-		}
+		cmd.Env = mergeMCPProcessEnv(cfg.Env)
 		return &mcp.CommandTransport{Command: cmd}, nil
 	case cfg.URL != "":
 		return &mcp.StreamableClientTransport{Endpoint: cfg.URL}, nil

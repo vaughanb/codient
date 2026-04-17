@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"codient/internal/sandbox"
 )
 
 const (
@@ -110,7 +111,7 @@ func runHookCommand(ctx context.Context, cwd, command string, timeoutSec int, st
 	cmd := exec.CommandContext(cctx, name, args...)
 	cmd.Dir = cwd
 	cmd.Stdin = bytes.NewReader(stdinJSON)
-	cmd.Env = os.Environ()
+	cmd.Env = sandbox.ScrubOSEnviron(nil)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

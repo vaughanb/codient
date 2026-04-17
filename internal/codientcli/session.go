@@ -1715,6 +1715,9 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	fmt.Fprintf(os.Stderr, "codient: %s set to %q (saved)\n", key, value)
 
 	switch key {
+	case "sandbox_mode", "sandbox_ro_paths", "sandbox_container_image", "exec_env_passthrough":
+		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 	case "model", "base_url", "api_key", "max_concurrent":
 		s.client = openaiclient.New(s.cfg)
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
@@ -1769,8 +1772,12 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  max_concurrent:        %d\n", s.cfg.MaxConcurrent)
 	fmt.Fprintf(w, "\n  -- Exec --\n")
 	fmt.Fprintf(w, "  exec_allowlist:        %s\n", strings.Join(s.cfg.ExecAllowlist, ","))
+	fmt.Fprintf(w, "  exec_env_passthrough:  %s\n", strings.Join(s.cfg.ExecEnvPassthrough, ","))
 	fmt.Fprintf(w, "  exec_timeout_sec:      %d\n", s.cfg.ExecTimeoutSeconds)
 	fmt.Fprintf(w, "  exec_max_output_bytes: %d\n", s.cfg.ExecMaxOutputBytes)
+	fmt.Fprintf(w, "  sandbox_mode:          %s\n", s.cfg.SandboxMode)
+	fmt.Fprintf(w, "  sandbox_ro_paths:      %s\n", strings.Join(s.cfg.SandboxReadOnlyPaths, ","))
+	fmt.Fprintf(w, "  sandbox_container_image: %s\n", s.cfg.SandboxContainerImage)
 	fmt.Fprintf(w, "\n  -- Context --\n")
 	fmt.Fprintf(w, "  context_window:        %d\n", s.cfg.ContextWindowTokens)
 	fmt.Fprintf(w, "  context_reserve:       %d\n", s.cfg.ContextReserveTokens)
@@ -1882,6 +1889,14 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return strconv.Itoa(s.cfg.MaxConcurrent), true
 	case "exec_allowlist":
 		return strings.Join(s.cfg.ExecAllowlist, ","), true
+	case "exec_env_passthrough":
+		return strings.Join(s.cfg.ExecEnvPassthrough, ","), true
+	case "sandbox_mode":
+		return s.cfg.SandboxMode, true
+	case "sandbox_ro_paths":
+		return strings.Join(s.cfg.SandboxReadOnlyPaths, ","), true
+	case "sandbox_container_image":
+		return s.cfg.SandboxContainerImage, true
 	case "exec_timeout_sec":
 		return strconv.Itoa(s.cfg.ExecTimeoutSeconds), true
 	case "exec_max_output_bytes":
@@ -1994,6 +2009,20 @@ func (s *session) setConfig(key, value string) error {
 		s.cfg.MaxConcurrent = n
 	case "exec_allowlist":
 		s.cfg.ExecAllowlist = config.ParseExecAllowlistString(value)
+	case "exec_env_passthrough":
+		s.cfg.ExecEnvPassthrough = config.ParseExecEnvPassthroughString(value)
+	case "sandbox_mode":
+		s.cfg.SandboxMode = strings.TrimSpace(strings.ToLower(value))
+		if err := config.ValidateSandbox(s.cfg); err != nil {
+			return err
+		}
+	case "sandbox_ro_paths":
+		s.cfg.SandboxReadOnlyPaths = config.ParseSandboxReadOnlyPathsString(value)
+	case "sandbox_container_image":
+		s.cfg.SandboxContainerImage = strings.TrimSpace(value)
+		if err := config.ValidateSandbox(s.cfg); err != nil {
+			return err
+		}
 	case "exec_timeout_sec":
 		n, err := parseInt(value)
 		if err != nil || n < 1 {

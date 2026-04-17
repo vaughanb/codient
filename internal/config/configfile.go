@@ -34,6 +34,13 @@ type PersistentConfig struct {
 	ExecDisable     bool   `json:"exec_disable,omitempty"`
 	ExecTimeoutSec  int    `json:"exec_timeout_sec,omitempty"`
 	ExecMaxOutBytes int    `json:"exec_max_output_bytes,omitempty"`
+	// ExecEnvPassthrough is a comma-separated list of extra environment variable names to forward to subprocesses (after scrubbing).
+	ExecEnvPassthrough string `json:"exec_env_passthrough,omitempty"`
+
+	// Sandbox: off | native | container | auto (default off). Environment scrubbing applies whenever exec runs.
+	SandboxMode         string `json:"sandbox_mode,omitempty"`
+	SandboxReadOnlyPaths string `json:"sandbox_ro_paths,omitempty"`
+	SandboxContainerImage string `json:"sandbox_container_image,omitempty"`
 
 	// Context
 	ContextWindow  int `json:"context_window,omitempty"`
@@ -228,8 +235,12 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		Workspace:            cfg.Workspace,
 		MaxConcurrent:        cfg.MaxConcurrent,
 		ExecAllowlist:        strings.Join(cfg.ExecAllowlist, ","),
+		ExecEnvPassthrough:   strings.Join(cfg.ExecEnvPassthrough, ","),
 		ExecTimeoutSec:       cfg.ExecTimeoutSeconds,
 		ExecMaxOutBytes:      cfg.ExecMaxOutputBytes,
+		SandboxMode:          cfg.SandboxMode,
+		SandboxReadOnlyPaths: strings.Join(cfg.SandboxReadOnlyPaths, ","),
+		SandboxContainerImage: cfg.SandboxContainerImage,
 		ContextWindow:        cfg.ContextWindowTokens,
 		ContextReserve:       cfg.ContextReserveTokens,
 		MaxLLMRetries:        cfg.MaxLLMRetries,

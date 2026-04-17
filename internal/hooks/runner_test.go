@@ -10,6 +10,25 @@ import (
 	"testing"
 )
 
+func TestRunHookCommand_ScrubsEnv(t *testing.T) {
+	const leak = "secret-token-must-not-appear-in-child"
+	t.Setenv("GITHUB_TOKEN", leak)
+	dir := t.TempDir()
+	var cmd string
+	if runtime.GOOS == "windows" {
+		cmd = `echo %GITHUB_TOKEN%`
+	} else {
+		cmd = `printf '%s' "$GITHUB_TOKEN"`
+	}
+	rr := runHookCommand(context.Background(), dir, cmd, 30, nil)
+	if rr.Err != nil {
+		t.Fatalf("runHookCommand: %v", rr.Err)
+	}
+	if strings.Contains(string(rr.Stdout), leak) || strings.Contains(string(rr.Stderr), leak) {
+		t.Fatalf("GITHUB_TOKEN leaked into hook subprocess stdout/stderr")
+	}
+}
+
 func TestParseHookOutput_exit2(t *testing.T) {
 	t.Parallel()
 	out, err := parseHookOutput(nil, []byte("nope"), exitCodeBlock)

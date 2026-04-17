@@ -8,12 +8,15 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
+	github.com/elastic/go-seccomp-bpf v1.6.0
+	github.com/landlock-lsm/go-landlock v0.8.0
 	github.com/lucasb-eyer/go-colorful v1.3.0
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/openai/openai-go/v3 v3.30.0
 	github.com/vaughanb/searchmux v1.0.0
 	golang.org/x/image v0.39.0
 	golang.org/x/net v0.52.0
+	golang.org/x/sys v0.42.0
 	golang.org/x/term v0.41.0
 )
 
@@ -59,7 +62,7 @@ require (
 	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 // indirect
 )

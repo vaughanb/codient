@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"codient/internal/sandbox"
 )
 
 const (
@@ -44,6 +46,14 @@ type Config struct {
 	// ExecAllowlist is a list of lowercase command names (first argv) permitted for run_command and run_shell.
 	// When unset, defaults to go, git, and the platform shell (cmd or sh); set exec_disable to disable.
 	ExecAllowlist []string
+	// ExecEnvPassthrough lists extra environment variable names forwarded to subprocesses (after secret scrubbing).
+	ExecEnvPassthrough []string
+	// SandboxMode selects subprocess isolation: off, native, container, auto (see README).
+	SandboxMode string
+	// SandboxReadOnlyPaths are extra host paths granted read-only to the native/container sandbox.
+	SandboxReadOnlyPaths []string
+	// SandboxContainerImage is the OCI image for sandbox_mode container (optional; default alpine).
+	SandboxContainerImage string
 	// ExecTimeoutSeconds caps each run_command (default 120, max 3600).
 	ExecTimeoutSeconds int
 	// ExecMaxOutputBytes truncates combined stdout+stderr (default 256KiB, max 10MiB).
@@ -300,6 +310,14 @@ func Load() (*Config, error) {
 		checkpointAuto = "plan"
 	}
 
+	execEnvPassthrough := parseCommaListPreserveCase(pc.ExecEnvPassthrough)
+	sandboxRO := parseSandboxPaths(pc.SandboxReadOnlyPaths)
+	sandboxMode := strings.TrimSpace(strings.ToLower(pc.SandboxMode))
+	if sandboxMode == "" {
+		sandboxMode = "off"
+	}
+	sandboxImg := strings.TrimSpace(pc.SandboxContainerImage)
+
 	c := &Config{
 		BaseURL:              baseURL,
 		APIKey:               apiKey,
@@ -307,9 +325,13 @@ func Load() (*Config, error) {
 		MaxConcurrent:        maxConcurrent,
 		Workspace:            ws,
 		HooksEnabled:         pc.HooksEnabled,
-		ExecAllowlist:        execAllowlist,
-		ExecTimeoutSeconds:   execTimeout,
-		ExecMaxOutputBytes:   execMaxOut,
+		ExecAllowlist:         execAllowlist,
+		ExecEnvPassthrough:    execEnvPassthrough,
+		ExecTimeoutSeconds:    execTimeout,
+		ExecMaxOutputBytes:    execMaxOut,
+		SandboxMode:           sandboxMode,
+		SandboxReadOnlyPaths:  sandboxRO,
+		SandboxContainerImage: sandboxImg,
 		ContextWindowTokens:  pc.ContextWindow,
 		ContextReserveTokens: contextReserve,
 		MaxLLMRetries:        maxLLMRetries,
@@ -346,6 +368,9 @@ func Load() (*Config, error) {
 		GitAutoCommit:        gitAutoCommit,
 		CheckpointAuto:       checkpointAuto,
 		CostPerMTok:          pc.CostPerMTok,
+	}
+	if err := ValidateSandbox(c); err != nil {
+		return nil, err
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	if c.ExecTimeoutSeconds < 1 {
@@ -421,6 +446,28 @@ func (c *Config) EffectiveWorkspace() string {
 	return strings.TrimSpace(c.Workspace)
 }
 
+// ValidateSandbox checks SandboxMode and runtime availability (native/container).
+func ValidateSandbox(c *Config) error {
+	sm := strings.TrimSpace(strings.ToLower(c.SandboxMode))
+	if sm == "" {
+		c.SandboxMode = "off"
+		sm = "off"
+	} else {
+		c.SandboxMode = sm
+	}
+	if !sandbox.ModeIsValid(sm) {
+		return fmt.Errorf("invalid sandbox_mode %q (use off, native, container, auto)", c.SandboxMode)
+	}
+	runner := sandbox.SelectRunner(sm, sandbox.SelectOptions{ContainerImage: strings.TrimSpace(c.SandboxContainerImage)})
+	if sm == "native" && !runner.Available() {
+		return fmt.Errorf("sandbox_mode native is not available on this system (try auto or off)")
+	}
+	if sm == "container" && !runner.Available() {
+		return fmt.Errorf("sandbox_mode container requires docker or podman in PATH")
+	}
+	return nil
+}
+
 // defaultExecAllowlist is used when exec_allowlist is unset and exec_disable is not set,
 // so run_command / run_shell are registered without extra configuration.
 // It includes the platform shell (cmd on Windows, sh on Unix) so run_shell can run mkdir and other builtins.
@@ -440,6 +487,16 @@ func ParseExecAllowlistString(s string) []string {
 // ParseFetchAllowHostsString parses a comma-separated fetch allow hosts string.
 func ParseFetchAllowHostsString(s string) []string {
 	return parseFetchAllowHosts(s)
+}
+
+// ParseExecEnvPassthroughString parses comma-separated environment variable names for subprocess passthrough.
+func ParseExecEnvPassthroughString(s string) []string {
+	return parseCommaListPreserveCase(s)
+}
+
+// ParseSandboxReadOnlyPathsString parses comma-separated paths for sandbox read-only mounts.
+func ParseSandboxReadOnlyPathsString(s string) []string {
+	return parseSandboxPaths(s)
 }
 
 func parseExecAllowlist(s string) []string {
@@ -508,6 +565,51 @@ func parseFetchAllowHosts(s string) []string {
 		}
 		seen[h] = struct{}{}
 		out = append(out, h)
+	}
+	return out
+}
+
+func parseCommaListPreserveCase(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+func parseSandboxPaths(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
 	}
 	return out
 }

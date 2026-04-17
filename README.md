@@ -131,8 +131,12 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `max_concurrent` | Max concurrent in-flight completion requests | `3` |
 | **Exec** | | |
 | `exec_allowlist` | Comma-separated command names allowed as `argv[0]` | `go,git,cmd` (or `sh`) |
+| `exec_env_passthrough` | Extra environment variable names forwarded to subprocesses after [secret scrubbing](#subprocess-sandboxing) | *(empty)* |
 | `exec_timeout_sec` | Per-command timeout (max 3600) | `120` |
 | `exec_max_output_bytes` | Cap on combined stdout+stderr (max 10 MiB) | `262144` |
+| `sandbox_mode` | Subprocess isolation: `off` (default), `native` (OS sandbox on Linux/macOS/Windows), `container` (Docker/Podman), `auto` (native if available, else container, else env scrub only) | `off` |
+| `sandbox_ro_paths` | Comma-separated extra host paths granted read-only in native/container sandboxes | *(empty)* |
+| `sandbox_container_image` | OCI image for `sandbox_mode: container` | `alpine:3.20` (built-in default) |
 | **Context** | | |
 | `context_window` | Model context window in tokens (`0` = probe server at startup; shown on the welcome banner as **Context**) | `0` |
 | `context_reserve` | Tokens reserved for the assistant reply | `4096` |
@@ -180,6 +184,22 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `update_notify` | Show interactive update prompt on REPL startup | `true` |
 | **MCP** | | |
 | `mcp_servers` | Map of MCP server IDs to connection configs (see [MCP servers](#mcp-model-context-protocol-servers)) | *(empty)* |
+
+### Subprocess sandboxing
+
+Codient **always scrubs** the parent environment before spawning tools, hooks, MCP stdio servers, verification commands, and `run_command` / `run_shell`: known secret patterns (e.g. `*_TOKEN`, cloud prefixes, `SSH_AUTH_SOCK`) are removed. A safe baseline (`PATH`, `HOME`, Go-related vars, etc.) is kept; use **`exec_env_passthrough`** to allow additional variable names.
+
+**`sandbox_mode`** adds OS-level or container isolation on top of scrubbing:
+
+- **`off`** (default): scrubbed env + normal process execution.
+- **`native`**: Linux uses Landlock + seccomp via a re-exec helper; macOS uses Seatbelt (`sandbox-exec`); Windows uses a Job Object (resource limits). Requires kernel/runtime support; `config` load fails if unavailable.
+- **`container`**: runs commands in Docker or Podman (`--network=none`, workspace mounted at `/workspace`). Requires a container runtime on `PATH`.
+- **`auto`**: tries `native`, then `container`, then falls back to scrub-only (a warning is printed when falling back).
+
+Use **`-sandbox <mode>`** on the CLI to override `sandbox_mode` for that process.
+
+**Optional integration tests** (real Docker/Podman) live under `internal/sandbox` with `//go:build integration`. Run with  
+`CODIENT_INTEGRATION=1 go test -tags=integration ./internal/sandbox/...` when a container runtime is installed.
 
 ### Auto-check sequence
 
@@ -434,6 +454,7 @@ Use `-help` for all flags. Notable options:
 
 - **`-mode`** — `build` (default), `ask`, or `plan`
 - **`-workspace`** — workspace root (overrides config and cwd)
+- **`-sandbox`** — subprocess isolation mode (`off`, `native`, `container`, `auto`; overrides config); see [Subprocess sandboxing](#subprocess-sandboxing)
 - **`-new-session`** — start fresh instead of resuming the latest session
 - **`-update`** — check for a newer release and install it (see [Auto-update](#auto-update))
 - **`-repl`** — explicit REPL (default when stdin is a TTY)

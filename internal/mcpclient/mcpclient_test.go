@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -144,5 +145,27 @@ func TestInputSchemaToMap(t *testing.T) {
 	}
 	if m["type"] != "object" {
 		t.Errorf("raw schema type = %v, want object", m["type"])
+	}
+}
+
+func TestMergeMCPProcessEnv_ScrubsAndOverrides(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "should-not-appear")
+	t.Setenv("PATH", os.Getenv("PATH"))
+	env := mergeMCPProcessEnv(map[string]string{"MCP_EXTRA": "ok"})
+	hasExtra := false
+	hasToken := false
+	for _, e := range env {
+		if strings.HasPrefix(e, "MCP_EXTRA=") {
+			hasExtra = true
+		}
+		if strings.HasPrefix(e, "GITHUB_TOKEN=") {
+			hasToken = true
+		}
+	}
+	if !hasExtra {
+		t.Fatal("expected MCP_EXTRA in merged env")
+	}
+	if hasToken {
+		t.Fatal("GITHUB_TOKEN should be scrubbed from subprocess env")
 	}
 }

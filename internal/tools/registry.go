@@ -793,7 +793,7 @@ func registerRunCommand(r *Registry, root string, exec *ExecOptions) {
 			if exec.Session != nil {
 				return runCommandWithSession(ctx, exec, root, p.Cwd, p.Argv, timeout, maxOut)
 			}
-			return runCommand(ctx, root, p.Cwd, p.Argv, allow, timeout, maxOut, exec.ProgressWriter)
+			return runCommand(ctx, root, p.Cwd, p.Argv, allow, exec, timeout, maxOut, exec.ProgressWriter)
 		},
 	})
 }
@@ -842,7 +842,7 @@ func registerRunShell(r *Registry, root string, exec *ExecOptions) {
 			if exec.Session != nil {
 				return runCommandWithSession(ctx, exec, root, p.Cwd, argv, timeout, maxOut)
 			}
-			return runCommand(ctx, root, p.Cwd, argv, allow, timeout, maxOut, exec.ProgressWriter)
+			return runCommand(ctx, root, p.Cwd, argv, allow, exec, timeout, maxOut, exec.ProgressWriter)
 		},
 	})
 }

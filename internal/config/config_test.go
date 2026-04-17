@@ -70,6 +70,16 @@ func TestLoad_Defaults(t *testing.T) {
 	if len(c.GitProtectedBranches) != 3 || c.GitProtectedBranches[0] != "main" {
 		t.Fatalf("default GitProtectedBranches: %#v", c.GitProtectedBranches)
 	}
+	if c.SandboxMode != "off" {
+		t.Fatalf("SandboxMode default: got %q", c.SandboxMode)
+	}
+}
+
+func TestValidateSandbox_Off(t *testing.T) {
+	c := &Config{SandboxMode: "off"}
+	if err := ValidateSandbox(c); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestParseGitProtectedBranches(t *testing.T) {
