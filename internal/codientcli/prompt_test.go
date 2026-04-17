@@ -16,7 +16,7 @@ func TestBuildAgentSystemPrompt_IncludesRunCommandHelp(t *testing.T) {
 		ExecAllowlist: []string{"go", "git"},
 	}
 	reg := buildRegistry(cfg, prompt.ModeBuild, nil, nil)
-	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "", "", "", "", "")
+	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "", "", "", "")
 	if !strings.Contains(s, "run_command") {
 		t.Fatalf("missing run_command: %s", s)
 	}
@@ -34,7 +34,7 @@ func TestBuildAgentSystemPrompt_IncludesRunCommandHelp(t *testing.T) {
 func TestBuildAgentSystemPrompt_UserSystemAppended(t *testing.T) {
 	cfg := &config.Config{}
 	reg := buildRegistry(cfg, prompt.ModeBuild, nil, nil)
-	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "Be concise.", "", "", "", "")
+	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "Be concise.", "", "", "")
 	if !strings.Contains(s, "Be concise.") {
 		t.Fatalf("got %s", s)
 	}
@@ -81,7 +81,7 @@ func TestBuildAgentSystemPrompt_DelegationSection_Build(t *testing.T) {
 	tools.RegisterDelegateTask(reg, "build", func(_ context.Context, _, _, _ string) (string, error) {
 		return "", nil
 	})
-	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "", "", "", "", "")
+	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "", "", "", "")
 	if !strings.Contains(s, "Task delegation") {
 		t.Fatal("build mode prompt should include Task delegation section")
 	}
@@ -96,7 +96,7 @@ func TestBuildAgentSystemPrompt_DelegationSection_Ask(t *testing.T) {
 	tools.RegisterDelegateTask(reg, "ask", func(_ context.Context, _, _, _ string) (string, error) {
 		return "", nil
 	})
-	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeAsk, "", "", "", "", "")
+	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeAsk, "", "", "", "")
 	if !strings.Contains(s, "Task delegation") {
 		t.Fatal("ask mode prompt should include Task delegation section")
 	}
@@ -108,7 +108,7 @@ func TestBuildAgentSystemPrompt_DelegationSection_Ask(t *testing.T) {
 func TestBuildAgentSystemPrompt_NoDelegation_WithoutTool(t *testing.T) {
 	cfg := &config.Config{Workspace: t.TempDir()}
 	reg := buildRegistry(cfg, prompt.ModeBuild, nil, nil)
-	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "", "", "", "", "")
+	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "", "", "", "")
 	if strings.Contains(s, "Task delegation") {
 		t.Fatal("system prompt should NOT include Task delegation when delegate_task is not registered")
 	}

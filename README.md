@@ -84,9 +84,13 @@ All settings live in a single JSON file. Use `/config` to view and edit, or edit
   "search_url": "http://localhost:8888",
   "fetch_allow_hosts": "docs.go.dev,pkg.go.dev",
   "autocheck_cmd": "go build ./...",
+  "lint_cmd": "golangci-lint run ./...",
+  "test_cmd": "go test ./...",
   "verbose": true
 }
 ```
+
+Omit **`lint_cmd`** and **`test_cmd`** to use [auto-detection](#auto-check-sequence) (same as empty string). Set either to **`off`** to skip that step in the post-edit sequence.
 
 **Per-mode models and endpoints** — Under `models`, you can override `base_url`, `api_key`, and `model` for `plan`, `build`, and `ask`. Any field left out inherits from the top-level connection. Use this for a remote planning API and a local implementation server, for example:
 
@@ -147,7 +151,9 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `search_max_results` | Results per `web_search` query (max 10) | `5` |
 | **Auto** | | |
 | `autocompact_threshold` | Context usage % that triggers compaction (0 disables) | `75` |
-| `autocheck_cmd` | Shell command after file edits (empty = auto-detect, `off` = disable) | *(auto)* |
+| `autocheck_cmd` | **Build** check after mutating file tools in **build** mode (empty = auto-detect from workspace, `off` = skip). Runs first in the auto-check sequence. | *(auto)* |
+| `lint_cmd` | **Lint** check in the same sequence (empty = auto-detect, `off` = skip). Runs after build succeeds (**fail-fast**). | *(auto)* |
+| `test_cmd` | **Test** check in the same sequence (empty = auto-detect, `off` = skip). Runs after lint succeeds. | *(auto)* |
 | **Git (build mode)** | | |
 | `git_auto_commit` | After each build turn that changes files, commit with message `codient: turn N` (set `false` for legacy file-restore `/undo` without commits) | `true` |
 | `git_protected_branches` | Comma-separated branch names; when the first change lands on one of these, codient creates `codient/<task-slug>` and commits there | `main,master,develop` |
@@ -173,6 +179,10 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `update_notify` | Show interactive update prompt on REPL startup | `true` |
 | **MCP** | | |
 | `mcp_servers` | Map of MCP server IDs to connection configs (see [MCP servers](#mcp-model-context-protocol-servers)) | *(empty)* |
+
+### Auto-check sequence
+
+In **build** mode, after successful mutating tools (`write_file`, `str_replace`, etc.), codient runs **build → lint → test** using the resolved `autocheck_cmd`, `lint_cmd`, and `test_cmd` settings. Order is **fail-fast** (if build fails, lint and test are skipped). Each step uses the same timeout cap as the legacy single-command auto-check (bounded by `exec_timeout_sec`, max 60s per step). **Auto-detection** examples: **build** — same as before (`go build ./...`, `cargo check`, `npx tsc --noEmit`, …). **Lint** — `golangci-lint run ./...` when `go.mod` exists and `golangci-lint` is on `PATH`; `cargo clippy -- -D warnings` for Rust; `npm run lint` when `package.json` has a `lint` script; Python: `ruff check .` or `flake8` if that binary is on `PATH`. **Test** — `go test ./...`, `cargo test`, `npm test` when a `test` script exists, or `python -m pytest` when pytest markers are present. Plan-mode **verification** at the end of a plan uses the same resolved build, lint, and test commands.
 
 ### Token usage and cost estimates
 
@@ -456,7 +466,7 @@ Inside a session you can use slash commands to control the agent:
 | `/tools` | List tools available in current mode |
 | `/hooks` | List configured lifecycle hooks (requires `hooks_enabled`) |
 | `/mcp [server]` | List connected MCP servers and tool counts; with a server name, list that server's tools |
-| `/status` | Show session state (mode, model, turns, estimated context, API token totals, auto-check, exec policy) |
+| `/status` | Show session state (mode, model, turns, estimated context, API token totals, resolved **auto-check** build/lint/test commands, exec policy) |
 | `/cost` (or `/tokens`) | Show session token counts (prompt/completion/total) and estimated cost |
 | `/log [path]` | Show logging status or enable JSONL logging to a file |
 | `/undo` | Undo the last build turn. With **`git_auto_commit`** (default): removes the last codient commit (`HEAD~1`). Otherwise: restores tracked files and deletes new files from that turn. `/undo all` resets the repo to the commit at session start (auto-commit) or reverts all working-tree changes (legacy). Requires a git repo. |

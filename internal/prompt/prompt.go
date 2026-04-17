@@ -18,9 +18,11 @@ type Params struct {
 	Reg               *tools.Registry
 	Mode              Mode // zero / empty treated as ModeBuild
 	UserSystem        string
-	RepoInstructions  string // optional, already truncated by caller
-	AutoCheckResolved string // non-empty when post-edit auto-check is enabled (resolved command line)
-	ProjectContext    string // auto-detected project summary (language, framework, etc.)
+	RepoInstructions       string // optional, already truncated by caller
+	AutoCheckBuildResolved string // resolved build command (autocheck_cmd), empty when disabled
+	AutoCheckLintResolved  string // resolved lint command, empty when disabled
+	AutoCheckTestResolved  string // resolved test command, empty when disabled
+	ProjectContext         string // auto-detected project summary (language, framework, etc.)
 	Memory            string // cross-session memory (global + workspace), already loaded and truncated
 	ReviewMode        bool   // when true, appends review/verification guidance
 }
@@ -347,8 +349,23 @@ func sectionPerToolNotes(p Params) string {
 	if _, ok := set["copy_path"]; ok {
 		b.WriteString("- **copy_path**: Copies a file or directory tree within the workspace (symlinks not supported).\n")
 	}
-	if _, ok := set["write_file"]; ok && strings.TrimSpace(p.AutoCheckResolved) != "" {
-		fmt.Fprintf(&b, "- **Auto-check**: After successful **write_file**, **str_replace**, **patch_file**, **insert_lines**, **remove_path**, **move_path**, or **copy_path**, the host runs `%s`. If it fails, you receive `[auto-check]` feedback—fix those errors before moving on.\n", strings.TrimSpace(p.AutoCheckResolved))
+	if _, ok := set["write_file"]; ok {
+		bld := strings.TrimSpace(p.AutoCheckBuildResolved)
+		lnt := strings.TrimSpace(p.AutoCheckLintResolved)
+		tst := strings.TrimSpace(p.AutoCheckTestResolved)
+		if bld != "" || lnt != "" || tst != "" {
+			var parts []string
+			if bld != "" {
+				parts = append(parts, fmt.Sprintf("**build** `%s`", bld))
+			}
+			if lnt != "" {
+				parts = append(parts, fmt.Sprintf("**lint** `%s`", lnt))
+			}
+			if tst != "" {
+				parts = append(parts, fmt.Sprintf("**test** `%s`", tst))
+			}
+			fmt.Fprintf(&b, "- **Auto-check**: After successful **write_file**, **str_replace**, **patch_file**, **insert_lines**, **remove_path**, **move_path**, or **copy_path**, the host runs checks in order (**fail-fast**): %s. If a step fails, you receive `[auto-check]` feedback for that step—fix those errors before moving on.\n", strings.Join(parts, ", then "))
+		}
 	}
 	if _, ok := set["run_command"]; ok && len(cfg.ExecAllowlist) > 0 {
 		fmt.Fprintf(&b, "- **run_command**: JSON `{\"argv\":[\"program\",\"arg1\",...],\"cwd\":\".\"}`. `argv[0]` must be a bare name (no path separators). Allowlisted: **%s**. Output includes `exit_code` and combined stdout/stderr. Example: `{\"argv\":[\"go\",\"test\",\"./...\"],\"cwd\":\".\"}`.\n", strings.Join(cfg.ExecAllowlist, ", "))

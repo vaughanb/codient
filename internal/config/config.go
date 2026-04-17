@@ -82,6 +82,12 @@ type Config struct {
 	// Empty triggers auto-detection from workspace markers (go.mod, package.json, etc.).
 	// Set to "off" to disable.
 	AutoCheckCmd string
+	// LintCmd is the lint command after file edits (build mode auto-check sequence).
+	// Empty triggers auto-detection; "off" disables.
+	LintCmd string
+	// TestCmd is the test command after file edits (build mode auto-check sequence).
+	// Empty triggers auto-detection; "off" disables.
+	TestCmd string
 
 	// Mode is the default mode from config (build|ask|plan). In main, last REPL mode overrides when -mode is not set; CLI flag overrides both.
 	Mode string
@@ -315,6 +321,8 @@ func Load() (*Config, error) {
 		FetchWebRateBurst:    fetchWebBurst,
 		AutoCompactPct:       autoCompactPct,
 		AutoCheckCmd:         strings.TrimSpace(pc.AutoCheckCmd),
+		LintCmd:              strings.TrimSpace(pc.LintCmd),
+		TestCmd:              strings.TrimSpace(pc.TestCmd),
 		Mode:                 strings.TrimSpace(pc.Mode),
 		Plain:                pc.Plain,
 		Quiet:                pc.Quiet,

@@ -60,6 +60,8 @@ type PersistentConfig struct {
 	// Auto
 	AutoCompactPct int    `json:"autocompact_threshold,omitempty"`
 	AutoCheckCmd   string `json:"autocheck_cmd,omitempty"`
+	LintCmd        string `json:"lint_cmd,omitempty"`
+	TestCmd        string `json:"test_cmd,omitempty"`
 
 	// UI/Output
 	Plain   bool `json:"plain,omitempty"`
@@ -237,6 +239,8 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		SearchMaxResults:     cfg.SearchMaxResults,
 		AutoCompactPct:       cfg.AutoCompactPct,
 		AutoCheckCmd:         cfg.AutoCheckCmd,
+		LintCmd:              cfg.LintCmd,
+		TestCmd:              cfg.TestCmd,
 		Plain:                cfg.Plain,
 		Quiet:                cfg.Quiet,
 		Verbose:              cfg.Verbose,

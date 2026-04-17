@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -49,7 +48,12 @@ func (s *session) runVerification(ctx context.Context, sc *bufio.Scanner, plan *
 		results = append(results, r)
 	}
 
-	if cmd := detectTestCmd(ws); cmd != "" {
+	if cmd := effectiveLintCmd(s.cfg); cmd != "" {
+		r := runVerificationCmd(ctx, ws, "lint", cmd, s.cfg.ExecMaxOutputBytes, s.progressOut)
+		results = append(results, r)
+	}
+
+	if cmd := effectiveTestCmd(s.cfg); cmd != "" {
 		r := runVerificationCmd(ctx, ws, "test", cmd, s.cfg.ExecMaxOutputBytes, s.progressOut)
 		results = append(results, r)
 	}
@@ -189,44 +193,6 @@ func runVerificationCmd(ctx context.Context, workspace, label, cmdLine string, m
 		Duration: dur,
 		Passed:   passed,
 	}
-}
-
-// detectTestCmd returns a shell command to run the project's test suite, or "".
-func detectTestCmd(workspace string) string {
-	root := strings.TrimSpace(workspace)
-	if root == "" {
-		return ""
-	}
-	if fileExists(filepath.Join(root, "go.mod")) {
-		return "go test ./..."
-	}
-	if fileExists(filepath.Join(root, "Cargo.toml")) {
-		return "cargo test"
-	}
-	if fileExists(filepath.Join(root, "package.json")) {
-		if hasNPMScript(root, "test") {
-			return "npm test"
-		}
-	}
-	if fileExists(filepath.Join(root, "pyproject.toml")) || fileExists(filepath.Join(root, "setup.cfg")) {
-		if fileExists(filepath.Join(root, "pytest.ini")) || dirExists(filepath.Join(root, "tests")) || dirExists(filepath.Join(root, "test")) {
-			return "python -m pytest"
-		}
-	}
-	return ""
-}
-
-func hasNPMScript(workspace, name string) bool {
-	b, err := os.ReadFile(filepath.Join(workspace, "package.json"))
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(b), `"`+name+`"`)
-}
-
-func dirExists(path string) bool {
-	st, err := os.Stat(path)
-	return err == nil && st.IsDir()
 }
 
 func printVerificationSummary(results []VerificationResult) {

@@ -170,9 +170,10 @@ func (s *session) newRunner() *agent.Runner {
 		}
 	}
 	if s.mode == prompt.ModeBuild {
-		if cmd := effectiveAutoCheckCmd(s.cfg); cmd != "" {
+		steps := buildAutoCheckSteps(s.cfg)
+		if len(steps) > 0 {
 			sec := autoCheckTimeoutSec(s.cfg)
-			r.AutoCheck = makeAutoCheck(s.cfg.EffectiveWorkspace(), cmd, time.Duration(sec)*time.Second, s.cfg.ExecMaxOutputBytes, s.progressOut)
+			r.AutoCheck = makeAutoCheckSequence(s.cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, s.cfg.ExecMaxOutputBytes, s.progressOut)
 		}
 	}
 	return r
@@ -690,7 +691,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 				if modeErr == nil && mode != s.mode {
 					s.setMode(mode)
 					s.registry = buildRegistry(s.cfg, mode, s, s.memOpts)
-					s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+					s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 				}
 				if existing.PlanPhase != "" {
 					s.planPhase = planstore.Phase(existing.PlanPhase)
@@ -745,13 +746,13 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	s.scanner = sc
 	resolveAstGrep(s.cfg, sc)
 	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 
 	if strings.TrimSpace(s.cfg.Model) == "" {
 		s.runSetupWizard(ctx, sc)
 		s.client = openaiclient.New(s.cfg)
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 	}
 
 	s.probeAndSetContext(ctx)
@@ -1197,7 +1198,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.runSetupWizard(ctx, sc)
 			s.client = openaiclient.New(s.cfg)
 			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
 			return nil
@@ -1253,7 +1254,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			if len(s.cfg.ExecAllowlist) > 0 {
 				s.execAllow = tools.NewSessionExecAllow(s.cfg.ExecAllowlist)
 				s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-				s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+				s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 			}
 			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			fmt.Fprintf(os.Stderr, "codient: new session %s\n", s.sessionID)
@@ -1279,10 +1280,20 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 				fmt.Fprintf(os.Stderr, "  context:   ~%d tokens (no window limit set)\n", usage)
 			}
 			fmt.Fprintf(os.Stderr, "  messages:  %d\n", len(s.history))
-			if ac := effectiveAutoCheckCmd(s.cfg); ac != "" {
-				fmt.Fprintf(os.Stderr, "  auto-check: %s\n", ac)
+			if b := effectiveAutoCheckCmd(s.cfg); b != "" {
+				fmt.Fprintf(os.Stderr, "  auto-check (build): %s\n", b)
 			} else {
-				fmt.Fprintf(os.Stderr, "  auto-check: off\n")
+				fmt.Fprintf(os.Stderr, "  auto-check (build): off\n")
+			}
+			if l := effectiveLintCmd(s.cfg); l != "" {
+				fmt.Fprintf(os.Stderr, "  auto-check (lint):  %s\n", l)
+			} else {
+				fmt.Fprintf(os.Stderr, "  auto-check (lint):  off\n")
+			}
+			if t := effectiveTestCmd(s.cfg); t != "" {
+				fmt.Fprintf(os.Stderr, "  auto-check (test):  %s\n", t)
+			} else {
+				fmt.Fprintf(os.Stderr, "  auto-check (test):  off\n")
 			}
 			if s.execAllow != nil {
 				if s.execAllow.AllowAll() {
@@ -1397,7 +1408,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.cfg.Workspace = path
 			s.projectContext = projectinfo.Detect(s.cfg.EffectiveWorkspace())
 			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			s.warnIfNotGitRepo()
 			fmt.Fprintf(os.Stderr, "codient: workspace set to %s\n", path)
@@ -1656,7 +1667,7 @@ func (s *session) reloadMemory() {
 		return
 	}
 	s.memory = mem
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 }
 
 func (s *session) runEditor(editor, path string) error {
@@ -1702,7 +1713,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	switch key {
 	case "model", "base_url", "api_key", "max_concurrent":
 		s.client = openaiclient.New(s.cfg)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 		if key == "model" || key == "base_url" {
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
@@ -1711,9 +1722,9 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 		"fetch_web_rate_per_sec", "fetch_web_rate_burst",
 		"search_max_results":
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
-	case "autocheck_cmd":
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+	case "autocheck_cmd", "lint_cmd", "test_cmd":
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 	case "embedding_model":
 		s.startCodeIndex(ctx)
 	case "hooks_enabled":
@@ -1730,7 +1741,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 
 	if mode, _, ok := parseModeConfigKey(key); ok && mode == string(s.mode) {
 		s.client = openaiclient.NewForMode(s.cfg, mode)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 	}
 	return nil
 }
@@ -1772,6 +1783,8 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "\n  -- Auto --\n")
 	fmt.Fprintf(w, "  autocompact_threshold: %d\n", s.cfg.AutoCompactPct)
 	fmt.Fprintf(w, "  autocheck_cmd:         %s\n", s.cfg.AutoCheckCmd)
+	fmt.Fprintf(w, "  lint_cmd:              %s\n", s.cfg.LintCmd)
+	fmt.Fprintf(w, "  test_cmd:              %s\n", s.cfg.TestCmd)
 	fmt.Fprintf(w, "\n  -- Git (build mode) --\n")
 	fmt.Fprintf(w, "  git_auto_commit:       %v\n", s.cfg.GitAutoCommit)
 	fmt.Fprintf(w, "  git_protected_branches: %s\n", strings.Join(s.cfg.GitProtectedBranches, ","))
@@ -1893,6 +1906,10 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return strconv.Itoa(s.cfg.AutoCompactPct), true
 	case "autocheck_cmd":
 		return s.cfg.AutoCheckCmd, true
+	case "lint_cmd":
+		return s.cfg.LintCmd, true
+	case "test_cmd":
+		return s.cfg.TestCmd, true
 	case "plain":
 		return strconv.FormatBool(s.cfg.Plain), true
 	case "quiet":
@@ -2068,6 +2085,10 @@ func (s *session) setConfig(key, value string) error {
 		s.cfg.AutoCompactPct = n
 	case "autocheck_cmd":
 		s.cfg.AutoCheckCmd = value
+	case "lint_cmd":
+		s.cfg.LintCmd = value
+	case "test_cmd":
+		s.cfg.TestCmd = value
 	case "plain":
 		b, err := parseBool(value)
 		if err != nil {
@@ -2113,7 +2134,7 @@ func (s *session) setConfig(key, value string) error {
 	case "ast_grep":
 		s.cfg.AstGrep = value
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 	case "embedding_model":
 		s.cfg.EmbeddingModel = value
 	case "hooks_enabled":
@@ -2300,7 +2321,7 @@ func (s *session) startCodeIndex(ctx context.Context) {
 	}
 	s.codeIndex = codeindex.New(ws, s.client, model)
 	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
 	fmt.Fprintf(os.Stderr, "codient: indexing workspace for semantic search...\n")
 	go func() {
 		s.codeIndex.BuildOrUpdate(ctx)

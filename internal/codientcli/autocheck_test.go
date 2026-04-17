@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,9 @@ func TestMakeAutoCheck(t *testing.T) {
 	if out.Progress == "" {
 		t.Fatal("expected progress line on success")
 	}
+	if !strings.Contains(out.Progress, "auto-check [build]:") || !strings.Contains(out.Progress, "exit=0") {
+		t.Fatalf("unexpected progress: %q", out.Progress)
+	}
 
 	if runtime.GOOS == "windows" {
 		cmd = "exit /b 1"
@@ -109,5 +113,123 @@ func TestMakeAutoCheck(t *testing.T) {
 	out = ac(context.Background())
 	if out.Inject == "" || out.Progress == "" {
 		t.Fatalf("failure should inject: inject=%q progress=%q", out.Inject, out.Progress)
+	}
+	if !strings.Contains(out.Inject, "[auto-check]") || !strings.Contains(out.Inject, "build errors") {
+		t.Fatalf("expected build label in inject: %q", out.Inject)
+	}
+}
+
+func TestDetectLintCmd_Cargo(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Cargo.toml"), []byte("[package]\nname=\"x\"\nversion=\"0.1.0\"\nedition=\"2021\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectLintCmd(dir); got != "cargo clippy -- -D warnings" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDetectLintCmd_NPM(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"scripts":{"lint":"eslint ."}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectLintCmd(dir); got != "npm run lint" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEffectiveLintCmd_OffAndExplicit(t *testing.T) {
+	cfg := &config.Config{LintCmd: "off"}
+	if effectiveLintCmd(cfg) != "" {
+		t.Fatal("off should disable")
+	}
+	cfg = &config.Config{LintCmd: "  mylint  "}
+	if effectiveLintCmd(cfg) != "mylint" {
+		t.Fatalf("got %q", effectiveLintCmd(cfg))
+	}
+}
+
+func TestEffectiveTestCmd_OffAndExplicit(t *testing.T) {
+	cfg := &config.Config{TestCmd: "off"}
+	if effectiveTestCmd(cfg) != "" {
+		t.Fatal("off should disable")
+	}
+	cfg = &config.Config{TestCmd: "  mytest  "}
+	if effectiveTestCmd(cfg) != "mytest" {
+		t.Fatalf("got %q", effectiveTestCmd(cfg))
+	}
+}
+
+func TestBuildAutoCheckSteps_Order(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Workspace:    dir,
+		AutoCheckCmd: "off",
+		LintCmd:      "off",
+		TestCmd:      "off",
+	}
+	steps := buildAutoCheckSteps(cfg)
+	if len(steps) != 0 {
+		t.Fatalf("all off: want no steps, got %#v", steps)
+	}
+	cfg = &config.Config{Workspace: dir}
+	steps = buildAutoCheckSteps(cfg)
+	if len(steps) < 1 {
+		t.Fatalf("expected at least build step: %#v", steps)
+	}
+	if steps[0].label != "build" || steps[0].cmdLine != "go build ./..." {
+		t.Fatalf("first step: %#v", steps[0])
+	}
+}
+
+func TestMakeAutoCheckSequence_FailFastOnBuild(t *testing.T) {
+	dir := t.TempDir()
+	var failCmd, okCmd string
+	if runtime.GOOS == "windows" {
+		failCmd = "exit /b 1"
+		okCmd = "exit /b 0"
+	} else {
+		failCmd = "exit 1"
+		okCmd = "exit 0"
+	}
+	seq := makeAutoCheckSequence(dir, []autoCheckStep{
+		{"build", failCmd},
+		{"lint", okCmd},
+	}, 5*time.Second, 4096, nil)
+	out := seq(context.Background())
+	if out.Inject == "" {
+		t.Fatal("expected inject on build failure")
+	}
+	if !strings.Contains(out.Inject, "build errors") {
+		t.Fatalf("want build failure: %q", out.Inject)
+	}
+	if strings.Contains(out.Inject, "lint errors") {
+		t.Fatalf("lint should not run after build fail: %q", out.Inject)
+	}
+}
+
+func TestMakeAutoCheckSequence_TwoStepsPass(t *testing.T) {
+	dir := t.TempDir()
+	var okCmd string
+	if runtime.GOOS == "windows" {
+		okCmd = "exit /b 0"
+	} else {
+		okCmd = "exit 0"
+	}
+	seq := makeAutoCheckSequence(dir, []autoCheckStep{
+		{"build", okCmd},
+		{"lint", okCmd},
+	}, 5*time.Second, 4096, nil)
+	out := seq(context.Background())
+	if out.Inject != "" {
+		t.Fatalf("unexpected inject: %q", out.Inject)
+	}
+	p := out.Progress
+	if !strings.Contains(p, "[build]:") || !strings.Contains(p, "[lint]:") || !strings.Contains(p, "exit=0") {
+		t.Fatalf("want both progress lines: %q", out.Progress)
 	}
 }

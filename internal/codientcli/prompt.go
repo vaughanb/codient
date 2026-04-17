@@ -89,15 +89,17 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 }
 
 // buildAgentSystemPrompt assembles the layered agent system message (tools, repo notes, -system).
-func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, userSystem, repoInstructions, projectContext, memory, autoCheckResolved string) string {
+func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, userSystem, repoInstructions, projectContext, memory string) string {
 	return prompt.Build(prompt.Params{
-		Cfg:               cfg,
-		Reg:               reg,
-		Mode:              mode,
-		UserSystem:        userSystem,
-		RepoInstructions:  repoInstructions,
-		ProjectContext:    projectContext,
-		Memory:            memory,
-		AutoCheckResolved: autoCheckResolved,
+		Cfg:                    cfg,
+		Reg:                    reg,
+		Mode:                   mode,
+		UserSystem:             userSystem,
+		RepoInstructions:       repoInstructions,
+		ProjectContext:         projectContext,
+		Memory:                 memory,
+		AutoCheckBuildResolved: effectiveAutoCheckCmd(cfg),
+		AutoCheckLintResolved:  effectiveLintCmd(cfg),
+		AutoCheckTestResolved:  effectiveTestCmd(cfg),
 	})
 }

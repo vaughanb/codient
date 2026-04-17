@@ -297,7 +297,7 @@ func Run() int {
 
 	s.client = openaiclient.New(cfg)
 	s.registry = buildRegistry(cfg, agentMode, s, memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, mem, effectiveAutoCheckCmd(cfg))
+	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, mem)
 
 	attached, err := loadImagePaths(imageFlagPaths)
 	if err != nil {

@@ -75,9 +75,14 @@ func TestBuild_AutoCheckNote(t *testing.T) {
 	reg := tools.Default("/tmp/w", nil, nil, nil, "", nil, nil)
 	s := Build(Params{
 		Cfg: cfg, Reg: reg, Mode: ModeBuild,
-		AutoCheckResolved: "go build ./...",
+		AutoCheckBuildResolved: "go build ./...",
+		AutoCheckLintResolved:  "golangci-lint run ./...",
+		AutoCheckTestResolved:  "go test ./...",
 	})
 	if !strings.Contains(s, "Auto-check") || !strings.Contains(s, "go build ./...") || !strings.Contains(s, "[auto-check]") {
 		t.Fatalf("expected auto-check note: %s", s)
+	}
+	if !strings.Contains(s, "golangci-lint") || !strings.Contains(s, "go test ./...") || !strings.Contains(s, "fail-fast") {
+		t.Fatalf("expected lint/test in auto-check note: %s", s)
 	}
 }
